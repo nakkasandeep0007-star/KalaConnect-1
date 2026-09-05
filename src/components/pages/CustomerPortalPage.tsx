@@ -24,6 +24,7 @@ interface CustomerPortalPageProps {
   b2bRequests: B2BQuoteRequest[];
   onOpenRequestQuote: (product: Product) => void;
   onSelectProduct?: (product: Product) => void;
+  onViewArtisan?: (artisanId: string) => void;
   onBackToRoleSelection: () => void;
   onUpdateB2BRequestStatus?: (requestId: string, status: any, details?: any) => Promise<void> | void;
 }
@@ -33,6 +34,7 @@ export const CustomerPortalPage: React.FC<CustomerPortalPageProps> = ({
   b2bRequests,
   onOpenRequestQuote,
   onSelectProduct,
+  onViewArtisan,
   onBackToRoleSelection,
   onUpdateB2BRequestStatus,
 }) => {
@@ -83,6 +85,7 @@ export const CustomerPortalPage: React.FC<CustomerPortalPageProps> = ({
           b2bRequests={b2bRequests}
           onOpenRequestQuote={onOpenRequestQuote}
           onSelectProduct={onSelectProduct}
+          onViewArtisan={onViewArtisan}
           setCurrentTab={() => {}}
           onUpdateB2BRequestStatus={onUpdateB2BRequestStatus}
         />

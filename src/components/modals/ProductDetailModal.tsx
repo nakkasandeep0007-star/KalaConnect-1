@@ -9,17 +9,22 @@ import {
   Layers,
   Sparkles,
   CheckCircle2,
-  Tag
+  Tag,
+  User,
+  MapPin,
+  ExternalLink
 } from 'lucide-react';
 import { LanguageCode, Product } from '../../types';
 import { speakText } from '../../utils/audioSpeech';
 import { useAuth } from '../../context/AuthContext';
+import { isProductOwner } from '../../utils/artisanProfileUtils';
 
 interface ProductDetailModalProps {
   product: Product | null;
   onClose: () => void;
   currentLang: LanguageCode;
   onEditPrice?: (product: Product) => void;
+  onViewArtisan?: (artisanId: string) => void;
 }
 
 export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
@@ -27,19 +32,14 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
   onClose,
   currentLang,
   onEditPrice,
+  onViewArtisan,
 }) => {
   const { user, role, artisan } = useAuth();
 
   if (!product) return null;
 
   // Role and ownership verification: Only artisans who own/sell this product can edit price
-  const isArtisanOwner = Boolean(
-    role === 'artisan' &&
-    ((user?.uid && (product.userId === user.uid || product.artisanId === user.uid)) ||
-      (artisan?.id && (product.userId === artisan.id || product.artisanId === artisan.id)) ||
-      (artisan?.name && product.artisanName && product.artisanName === artisan.name) ||
-      (!product.userId && !product.artisanId))
-  );
+  const isArtisanOwner = isProductOwner(product, role, user, artisan);
 
   const handleEditPrice = () => {
     // Programmatic enforcement: buyers and unauthorized users are safely rejected
@@ -167,6 +167,41 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
             <span className="text-[10px] text-stone-400 font-bold block">INVENTORY</span>
             <span className="font-semibold text-slate-800">{product.inventory} Available in stock</span>
           </div>
+        </div>
+
+        {/* Meet the Artisan Card */}
+        <div className="p-4 rounded-2xl bg-gradient-to-r from-amber-50/80 to-stone-50 border border-amber-200/80 flex items-center justify-between flex-wrap gap-3">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-[#C25E3E]/10 text-[#C25E3E] flex items-center justify-center font-bold text-base shrink-0">
+              <User className="w-5 h-5" />
+            </div>
+            <div>
+              <span className="text-[10px] font-bold text-[#C25E3E] uppercase tracking-wider block">
+                CRAFTED BY
+              </span>
+              <h4 className="font-bold text-slate-900 text-sm">
+                {product.artisanName || 'Master Artisan'}
+              </h4>
+              <p className="text-[11px] text-stone-500 flex items-center gap-1">
+                <MapPin className="w-3 h-3 text-stone-400" />
+                <span>{product.originRegion || product.artisanLocation || 'India'}</span>
+              </p>
+            </div>
+          </div>
+
+          {onViewArtisan && (
+            <button
+              onClick={() => {
+                onClose();
+                onViewArtisan(product.artisanId || product.userId || product.artisanName || 'sample-artist');
+              }}
+              id="product-detail-view-artisan-btn"
+              className="px-4 py-2 rounded-xl bg-white hover:bg-stone-50 text-slate-900 border border-stone-300 text-xs font-bold transition-all shadow-2xs flex items-center gap-1.5"
+            >
+              <span>Meet the Artisan</span>
+              <ExternalLink className="w-3.5 h-3.5 text-[#C25E3E]" />
+            </button>
+          )}
         </div>
 
         {/* Footer Actions */}

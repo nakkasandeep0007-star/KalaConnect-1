@@ -17,6 +17,7 @@ import {
   Sparkles,
   Loader2,
   AlertCircle,
+  ExternalLink,
 } from 'lucide-react';
 import { ArtisanProfile, LanguageCode, PageTab } from '../../types';
 import { LANGUAGES, SAMPLE_CRAFT_TYPES } from '../../data/mockData';
@@ -177,14 +178,27 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
               </p>
             </div>
 
-            <button
-              type="button"
-              onClick={playProfileSpeech}
-              className="p-2 rounded-xl bg-amber-50 text-amber-900 border border-amber-200 text-xs font-bold flex items-center gap-1.5"
-            >
-              <Volume2 className="w-4 h-4 text-[#C25E3E]" />
-              <span>Listen Info</span>
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setCurrentTab('artisan-profile')}
+                id="view-public-artisan-profile-btn"
+                className="px-3 py-2 rounded-xl bg-white hover:bg-stone-50 text-stone-700 hover:text-slate-900 border border-stone-200 text-xs font-bold flex items-center gap-1.5 shadow-2xs transition-colors"
+                title="Preview profile as seen by buyers"
+              >
+                <ExternalLink className="w-3.5 h-3.5 text-[#C25E3E]" />
+                <span>View Public Profile</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={playProfileSpeech}
+                className="p-2 rounded-xl bg-amber-50 text-amber-900 border border-amber-200 text-xs font-bold flex items-center gap-1.5"
+              >
+                <Volume2 className="w-4 h-4 text-[#C25E3E]" />
+                <span>Listen Info</span>
+              </button>
+            </div>
           </div>
 
           {errorMsg && (

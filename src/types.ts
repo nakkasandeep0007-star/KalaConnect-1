@@ -29,6 +29,7 @@ export type PageTab =
   | 'auth'
   | 'dashboard'
   | 'profile'
+  | 'artisan-profile'
   | 'previous-work'
   | 'catalog'
   | 'catalog-generator'
@@ -45,7 +46,25 @@ export type PageTab =
   | 'market'
   | 'b2b-marketplace'
   | 'b2b'
-  | 'insights';
+  | 'insights'
+  | 'activity';
+
+export type NotificationRelatedType = 'RFQ' | 'COUNTER_OFFER' | 'ORDER';
+
+export interface AppNotification {
+  notificationId: string;
+  recipientUserId: string;
+  senderUserId?: string;
+  type: string;
+  title: string;
+  message: string;
+  relatedId?: string;
+  relatedType?: NotificationRelatedType;
+  requestId?: string;
+  productId?: string;
+  read: boolean;
+  createdAt: string;
+}
 
 export type ProductStatus = 'draft' | 'ai_ready' | 'published';
 
@@ -157,9 +176,11 @@ export type OrderStatus =
   | 'advance_pending'
   | 'advance_paid'
   | 'in_progress'
+  | 'processing'
   | 'progress_update'
   | 'ready_for_delivery'
   | 'delivery_in_progress'
+  | 'shipped'
   | 'delivered'
   | 'final_payment'
   | 'completed';
@@ -194,6 +215,8 @@ export interface DeliveryTracking {
 export interface CustomOrder {
   id: string;
   artistId: string;
+  buyerId?: string;
+  customerId?: string;
   requestId?: string;
   orderNumber: string;
   customerName: string;
@@ -536,6 +559,12 @@ export interface B2BQuoteRequest {
   artisanOfferMessage?: string;
   offeredAt?: string;
   rejectionReason?: string;
+
+  // Accepted Offer & Linked Deal Fields
+  acceptedPrice?: number;
+  totalAmount?: number;
+  acceptedAt?: string;
+  orderId?: string;
 }
 
 export interface BuyerInquiry {

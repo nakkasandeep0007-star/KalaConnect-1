@@ -55,34 +55,74 @@ export async function saveOrderToDb(
 }
 
 export async function getArtistOrders(artistId: string): Promise<CustomOrder[]> {
+  return getUserOrders(artistId, 'artisan');
+}
+
+export async function getUserOrders(
+  userId: string,
+  role?: 'artisan' | 'buyer' | null,
+  userEmail?: string
+): Promise<CustomOrder[]> {
   const map = new Map<string, CustomOrder>();
 
   // 1. Firestore
   try {
-    const q = query(
-      collection(db, ORDERS_COLLECTION),
-      where('artistId', '==', artistId)
-    );
-    const snapshot = await getDocs(q);
-    snapshot.forEach((d) => {
-      const data = d.data() as CustomOrder;
-      map.set(data.id, data);
-    });
+    if (role === 'buyer') {
+      const qBuyer = query(
+        collection(db, ORDERS_COLLECTION),
+        where('buyerId', '==', userId)
+      );
+      const snapBuyer = await getDocs(qBuyer);
+      snapBuyer.forEach((d) => {
+        const data = d.data() as CustomOrder;
+        map.set(data.id, data);
+      });
+
+      if (userEmail) {
+        const qEmail = query(
+          collection(db, ORDERS_COLLECTION),
+          where('customerEmail', '==', userEmail)
+        );
+        const snapEmail = await getDocs(qEmail);
+        snapEmail.forEach((d) => {
+          const data = d.data() as CustomOrder;
+          map.set(data.id, data);
+        });
+      }
+    } else {
+      const q = query(
+        collection(db, ORDERS_COLLECTION),
+        where('artistId', '==', userId)
+      );
+      const snapshot = await getDocs(q);
+      snapshot.forEach((d) => {
+        const data = d.data() as CustomOrder;
+        map.set(data.id, data);
+      });
+    }
   } catch (err) {
     console.warn('Firestore order fetch notice:', err);
   }
 
-  // 2. Local cache
+  // 2. Local caches scan
   try {
-    const cacheKey = `${LOCAL_ORDERS_KEY}_${artistId}`;
-    const raw = localStorage.getItem(cacheKey);
-    if (raw) {
-      const cached: CustomOrder[] = JSON.parse(raw);
-      cached.forEach((o) => {
-        if (!map.has(o.id)) {
-          map.set(o.id, o);
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(LOCAL_ORDERS_KEY)) {
+        const raw = localStorage.getItem(k);
+        if (raw) {
+          const cached: CustomOrder[] = JSON.parse(raw);
+          cached.forEach((o) => {
+            const matches =
+              role === 'buyer'
+                ? o.buyerId === userId || o.customerId === userId || (userEmail && o.customerEmail === userEmail)
+                : o.artistId === userId || userId === 'sample-artist';
+            if (matches && !map.has(o.id)) {
+              map.set(o.id, o);
+            }
+          });
         }
-      });
+      }
     }
   } catch (cacheErr) {
     console.warn('Local cache order read notice:', cacheErr);
@@ -110,14 +150,21 @@ export async function updateOrderStatus(
   }
 
   try {
-    const cacheKey = `${LOCAL_ORDERS_KEY}_${artistId}`;
-    const raw四周 = localStorage.getItem(cacheKey);
-    if (raw四周) {
-      const cached: CustomOrder[] = JSON.parse(raw四周);
-      const updated = cached.map((o) =>
-        o.id === orderId ? { ...o, status } : o
-      );
-      localStorage.setItem(cacheKey, JSON.stringify(updated));
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(LOCAL_ORDERS_KEY)) {
+        const raw = localStorage.getItem(k);
+        if (raw) {
+          const cached: CustomOrder[] = JSON.parse(raw);
+          const hasOrder = cached.some((o) => o.id === orderId);
+          if (hasOrder) {
+            const updated = cached.map((o) =>
+              o.id === orderId ? { ...o, status } : o
+            );
+            localStorage.setItem(k, JSON.stringify(updated));
+          }
+        }
+      }
     }
   } catch (cacheErr) {
     console.warn('Local cache order status update notice:', cacheErr);

@@ -24,10 +24,14 @@ import {
   Palette,
   Tag,
   Wand2,
+  Pencil,
+  Lock,
+  SlidersHorizontal,
 } from 'lucide-react';
 import { LanguageCode, PageTab, PricingInputs, KalaPricingResult, Product, KalaPricingData } from '../../types';
 import { speakText } from '../../utils/audioSpeech';
 import { useProductDraft } from '../../context/ProductDraftContext';
+import { useAuth } from '../../context/AuthContext';
 import { calculateKalaPrice, fetchGeminiPriceExplanation } from '../../utils/pricingEngine';
 import { saveProductToDb } from '../../services/productService';
 
@@ -260,9 +264,9 @@ export const KalaPricePage: React.FC<KalaPricePageProps> = ({
   };
 
   // Save selected price to product draft and existing product
-  const handleUseThisPrice = async () => {
+  const handleUseThisPrice = async (overridePrice?: number) => {
     if (!pricingResult) return;
-    const finalPrice = chosenPrice || pricingResult.recommendedPrice;
+    const finalPrice = overridePrice !== undefined ? overridePrice : (chosenPrice || pricingResult.recommendedPrice);
 
     // 1. Update ProductDraftContext (active draft)
     const currentPricingInputs: PricingInputs = {
@@ -317,7 +321,7 @@ export const KalaPricePage: React.FC<KalaPricePageProps> = ({
         };
 
         try {
-          await saveProductToDb(target.userId || 'guest-artisan', updatedProduct);
+          await saveProductToDb(target.userId || user?.uid || 'guest-artisan', updatedProduct);
           setProducts((prev) =>
             prev.map((p) => (p.id === updatedProduct.id ? updatedProduct : p))
           );
@@ -350,8 +354,127 @@ export const KalaPricePage: React.FC<KalaPricePageProps> = ({
     speakText(speech, activeLang);
   };
 
+  const { user, role, artisan } = useAuth();
+  const isBuyer = role === 'buyer';
+
+  // Find the selected product if not in draft mode
+  const selectedProduct = selectedProductId !== 'draft' ? products.find((p) => p.id === selectedProductId) : null;
+
+  // Determine if user owns the selected item
+  const isOwner = Boolean(
+    role === 'artisan' &&
+    (
+      selectedProductId === 'draft' ||
+      (user?.uid && (selectedProduct?.userId === user.uid || selectedProduct?.artisanId === user.uid)) ||
+      (artisan?.id && (selectedProduct?.userId === artisan.id || selectedProduct?.artisanId === artisan.id)) ||
+      (artisan?.name && selectedProduct?.artisanName && selectedProduct.artisanName === artisan.name) ||
+      (!selectedProduct?.userId && !selectedProduct?.artisanId) // Default/guest sample product in current session
+    )
+  );
+
+  // Edit price state
+  const [isEditingPrice, setIsEditingPrice] = useState<boolean>(false);
+  const [customPriceInput, setCustomPriceInput] = useState<string>('');
+
+  const currentPrice = selectedProduct
+    ? (selectedProduct.actualPrice || selectedProduct.price || 0)
+    : (selectedProductId === 'draft' ? (draft.actualPrice || draft.suggestedPrice || 0) : 0);
+
+  const suggestedFairPrice = pricingResult?.recommendedPrice || 0;
+
+  // Deterministic Recommended Range:
+  // Lower bound: Suggested price - 10% (never below actual production cost), rounded to nearest ₹50 in INR
+  // Upper bound: Suggested price + 15%, rounded to nearest ₹50 in INR
+  const productionCost = pricingResult?.productionCost || 0;
+  const rangeMin = suggestedFairPrice > 0
+    ? Math.max(productionCost, Math.round((suggestedFairPrice * 0.9) / 50) * 50)
+    : 0;
+  const rangeMax = suggestedFairPrice > 0
+    ? Math.round((suggestedFairPrice * 1.15) / 50) * 50
+    : 0;
+
+  // Difference between current price and suggested price
+  const priceDifference = currentPrice > 0 ? currentPrice - suggestedFairPrice : 0;
+
+  // Price Status & Explanation
+  let priceStatus: 'below' | 'within' | 'above' | 'unset' = 'unset';
+  let statusLabel = activeLang === 'hi' ? 'कीमत तय नहीं है' : 'Price not set';
+  let statusExplanation = activeLang === 'hi'
+    ? 'इस उत्पाद के लिए कोई वर्तमान मूल्य निर्धारित नहीं है। उचित मूल्य का उपयोग करें।'
+    : 'No current price is set for this product. Use the suggested fair price to establish a sustainable selling price.';
+  let statusBadgeClass = 'bg-stone-100 text-stone-700 border-stone-200';
+
+  if (currentPrice > 0 && suggestedFairPrice > 0) {
+    if (currentPrice < rangeMin) {
+      priceStatus = 'below';
+      statusLabel = activeLang === 'hi' ? 'अनुशंसित दायरे से कम' : 'Below recommended range';
+      statusExplanation = activeLang === 'hi'
+        ? 'आपकी वर्तमान कीमत अनुशंसित दायरे से कम है। आप अपने काम का कम मूल्य आंक रहे हैं।'
+        : 'Your current price is below the recommended range. You may be underpricing your work.';
+      statusBadgeClass = 'bg-amber-100 text-amber-900 border-amber-300';
+    } else if (currentPrice > rangeMax) {
+      priceStatus = 'above';
+      statusLabel = activeLang === 'hi' ? 'अनुशंसित दायरे से अधिक' : 'Above recommended range';
+      statusExplanation = activeLang === 'hi'
+        ? 'आपकी वर्तमान कीमत अनुशंसित दायरे से अधिक है। सुनिश्चित करें कि उच्च कीमत उत्पाद की कारीगरी, सामग्री या स्थिति से समर्थित है।'
+        : 'Your current price is above the recommended range. Make sure the higher price is supported by the product\'s craftsmanship, materials, or positioning.';
+      statusBadgeClass = 'bg-purple-100 text-purple-900 border-purple-300';
+    } else {
+      priceStatus = 'within';
+      statusLabel = activeLang === 'hi' ? 'अनुशंसित दायरे के भीतर' : 'Within recommended range';
+      statusExplanation = activeLang === 'hi'
+        ? 'आपकी वर्तमान कीमत अनुशंसित दायरे के भीतर है।'
+        : 'Your current price is within the recommended range.';
+      statusBadgeClass = 'bg-emerald-100 text-emerald-900 border-emerald-300';
+    }
+  }
+
   const steps = pricingResult?.calculationSteps;
   const benchmark = pricingResult?.benchmark;
+  const profitAmount = steps
+    ? Math.round(steps.productionCost * (Number(profitMargin) / 100))
+    : 0;
+
+  // Dynamic explanation generated from actual inputs
+  const mainCostDriver = steps && steps.labourCost >= steps.materialCost
+    ? (activeLang === 'hi' ? 'कारीगरी श्रम' : 'artisan labor')
+    : (activeLang === 'hi' ? 'कच्चा माल' : 'material cost');
+
+  const mainDriverAmount = steps && steps.labourCost >= steps.materialCost
+    ? steps.labourCost
+    : steps?.materialCost || 0;
+
+  const dynamicExplanation = activeLang === 'hi'
+    ? `आपकी अनुशंसित कीमत ₹${suggestedFairPrice.toLocaleString('en-IN')} मुख्य रूप से ${mainCostDriver} (₹${mainDriverAmount.toLocaleString('en-IN')}), कच्चे माल की लागत (₹${(steps?.materialCost || Number(materialCost) || 0).toLocaleString('en-IN')}), पैकेजिंग व शिपिंग (₹${(((steps?.packagingCost || Number(packagingCost) || 0)) + ((steps?.shippingCost || Number(shippingCost) || 0))).toLocaleString('en-IN')}), और आपके ${profitMargin}% लक्षित लाभ मार्जिन (₹${profitAmount.toLocaleString('en-IN')}) पर आधारित है।`
+    : `Your recommendation is mainly influenced by ${mainCostDriver} (₹${mainDriverAmount.toLocaleString('en-IN')}), material cost (₹${(steps?.materialCost || Number(materialCost) || 0).toLocaleString('en-IN')}), packaging & shipping (₹${(((steps?.packagingCost || Number(packagingCost) || 0)) + ((steps?.shippingCost || Number(shippingCost) || 0))).toLocaleString('en-IN')}), and your ${profitMargin}% target margin (₹${profitAmount.toLocaleString('en-IN')}).`;
+
+  const isMissingData = (Number(materialCost) || 0) === 0 && (Number(labourRate) || 0) === 0 && (Number(hoursRequired) || 0) === 0;
+
+  const handleUseSuggestedPrice = async () => {
+    if (!isOwner || isBuyer || !pricingResult) return;
+    setChosenPrice(pricingResult.recommendedPrice);
+    await handleUseThisPrice(pricingResult.recommendedPrice);
+  };
+
+  const handleStartEditPrice = () => {
+    if (!isOwner || isBuyer) return;
+    setCustomPriceInput(String(currentPrice > 0 ? currentPrice : suggestedFairPrice));
+    setIsEditingPrice(true);
+  };
+
+  const handleSaveCustomPrice = async () => {
+    if (!isOwner || isBuyer || !pricingResult) return;
+    const num = Math.round(Number(customPriceInput));
+    if (!num || num <= 0) {
+      setInputError('Please enter a valid positive price amount.');
+      return;
+    }
+    setInputError(null);
+    setChosenPrice(num);
+    await handleUseThisPrice(num);
+    setIsEditingPrice(false);
+  };
+
   const displayExplanation =
     activeLang === 'hi'
       ? (geminiExplanation?.explanationHindi || pricingResult?.explanationHindi || pricingResult?.explanation)
@@ -792,243 +915,421 @@ export const KalaPricePage: React.FC<KalaPricePageProps> = ({
           </div>
         </div>
 
-        {/* Right Column: RESULT SCREEN & THREE PRICE OPTIONS */}
+        {/* Right Column: KALAPRICE INTELLIGENCE & PRICE EXPLORATION */}
         <div ref={resultsSectionRef} className="lg:col-span-6 space-y-4">
-          
-          {/* Main Result Card */}
-          <div className="bg-gradient-to-br from-[#1C2826] via-[#1E302D] to-[#121E1C] text-white rounded-3xl p-6 shadow-md space-y-5 border border-emerald-800/40 relative overflow-hidden">
-            
-            {/* Ambient subtle glow */}
-            <div className="absolute top-0 right-0 w-48 h-48 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
 
-            <div className="flex items-center justify-between relative z-10">
-              <span className="text-[11px] font-bold uppercase tracking-wider bg-emerald-500/20 text-emerald-300 px-3 py-1 rounded-full border border-emerald-500/30">
-                {activeLang === 'hi' ? 'आपका उचित विक्रय मूल्य' : 'Your Fair Price'}
-              </span>
+          {/* 1. Missing / Empty Data Alert */}
+          {isMissingData && (
+            <div className="p-4 bg-amber-50 border border-amber-200 rounded-3xl flex items-center justify-between text-xs text-amber-900 shadow-2xs animate-in fade-in">
+              <div className="flex items-center gap-2.5">
+                <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                <span className="font-semibold">
+                  {activeLang === 'hi'
+                    ? 'इस अनुशंसा को बेहतर बनाने के लिए छूटी हुई लागत जानकारी जोड़ें।'
+                    : 'Add the missing cost information to improve this recommendation.'}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => costsSectionRef.current?.scrollIntoView({ behavior: 'smooth' })}
+                className="font-bold underline text-amber-950 hover:text-amber-800 shrink-0 cursor-pointer ml-2"
+              >
+                {activeLang === 'hi' ? 'लागत जोड़ें' : 'Add Cost Info'}
+              </button>
+            </div>
+          )}
 
-              <span className="text-[11px] font-semibold text-emerald-200/90 bg-white/10 px-2.5 py-1 rounded-full border border-white/10">
-                Confidence: <strong className="text-emerald-300 font-bold">{pricingResult?.pricingData?.confidence || 'High'}</strong>
+          {/* 2. Role Restriction / Read-Only Banner */}
+          {isBuyer ? (
+            <div className="p-3.5 bg-blue-50/80 border border-blue-200 rounded-3xl flex items-center gap-2.5 text-xs text-blue-900 shadow-2xs">
+              <Lock className="w-4 h-4 text-blue-600 shrink-0" />
+              <div>
+                <span className="font-bold block">
+                  {activeLang === 'hi' ? 'क्रेता दृश्य (केवल देखने योग्य)' : 'Buyer View (Read-Only)'}
+                </span>
+                <span className="text-blue-700">
+                  {activeLang === 'hi'
+                    ? 'पारदर्शिता के लिए मूल्य बुद्धिमत्ता और लागत विवरण प्रदर्शित है। केवल सत्यापित कारीगर ही मूल्य संशोधित कर सकते हैं।'
+                    : 'Pricing intelligence is shown for fair-trade transparency. Price editing is reserved for the artisan owner.'}
+                </span>
+              </div>
+            </div>
+          ) : !isOwner ? (
+            <div className="p-3.5 bg-stone-100 border border-stone-300 rounded-3xl flex items-center gap-2.5 text-xs text-stone-800 shadow-2xs">
+              <Lock className="w-4 h-4 text-stone-600 shrink-0" />
+              <div>
+                <span className="font-bold block">
+                  {activeLang === 'hi' ? 'कारीगर स्वामित्व प्रतिबंध' : 'Product Owner Restriction'}
+                </span>
+                <span className="text-stone-600">
+                  {activeLang === 'hi'
+                    ? 'आप किसी अन्य कारीगर के उत्पाद का विवरण देख रहे हैं। मूल्य संशोधन केवल उत्पाद के स्वामी कारीगर द्वारा ही संभव है।'
+                    : 'Viewing another artisan\'s product in read-only mode. Only the verified product owner can modify prices.'}
+                </span>
+              </div>
+            </div>
+          ) : null}
+
+          {/* 3. KALAPRICE INTELLIGENCE PANEL */}
+          <div className="bg-white rounded-3xl p-6 border border-stone-200 shadow-xs space-y-5">
+            {/* Panel Header */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-4 border-b border-stone-100">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-2xl bg-[#C25E3E]/10 text-[#C25E3E] flex items-center justify-center border border-[#C25E3E]/20">
+                  <Sparkles className="w-4 h-4 text-[#C25E3E]" />
+                </div>
+                <div>
+                  <h2 className="text-base font-bold text-slate-900 tracking-tight flex items-center gap-2 flex-wrap">
+                    <span>KalaPrice Intelligence</span>
+                    <span className="text-[10px] font-bold bg-[#C25E3E]/10 text-[#C25E3E] px-2 py-0.5 rounded-full">
+                      {activeLang === 'hi' ? 'स्मार्ट फेयर प्राइसिंग' : 'Fair Price Engine'}
+                    </span>
+                  </h2>
+                  <p className="text-[11px] text-stone-500">
+                    {activeLang === 'hi' ? 'पारदर्शी कारीगर मूल्य निर्धारण व लागत विश्लेषण' : 'Transparent artisan pricing & cost intelligence'}
+                  </p>
+                </div>
+              </div>
+
+              {/* Prototype Label */}
+              <span className="text-[10px] font-medium text-stone-500 bg-stone-100 px-2.5 py-1 rounded-full border border-stone-200 self-start sm:self-center">
+                Prototype estimate based on entered costs and pricing factors
               </span>
             </div>
 
-            {/* Big Price Display */}
-            <div className="text-center py-2 relative z-10">
-              <span className="text-xs text-stone-300 block mb-1">
-                {activeLang === 'hi' ? 'अनुशंसित विक्रय मूल्य (Suggested Price)' : 'Recommended Selling Price'}
-              </span>
-              <div className="text-5xl sm:text-6xl font-bold font-serif text-white tracking-tight">
-                ₹{(chosenPrice || pricingResult?.recommendedPrice || 1499).toLocaleString('en-IN')}
+            {/* Step 1: Suggested Fair Price */}
+            <div className="p-5 bg-gradient-to-br from-stone-900 via-stone-850 to-stone-900 text-white rounded-2xl shadow-xs relative overflow-hidden">
+              <div className="flex items-center justify-between text-xs mb-1">
+                <span className="text-stone-300 font-bold uppercase tracking-wider text-[11px]">
+                  {activeLang === 'hi' ? 'अनुशंसित उचित मूल्य' : 'Suggested Fair Price'}
+                </span>
+                <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-bold px-2 py-0.5 rounded-full text-[10px]">
+                  100% Cost Recovery
+                </span>
               </div>
-              <p className="text-xs text-emerald-300/90 mt-1.5 font-medium">
+              <div className="text-4xl sm:text-5xl font-extrabold font-serif text-white tracking-tight my-1">
+                ₹{suggestedFairPrice.toLocaleString('en-IN')}
+              </div>
+              <p className="text-[11px] text-stone-300">
                 {activeLang === 'hi'
-                  ? `उत्पादन लागत: ₹${pricingResult?.productionCost || 1200} • शुद्ध लाभ मार्जिन: ${profitMargin}%`
-                  : `Production Cost: ₹${pricingResult?.productionCost || 1200} • Artisan Margin: ${profitMargin}%`}
+                  ? `कुल उत्पादन लागत ₹${productionCost.toLocaleString('en-IN')} + ${profitMargin}% कारीगर लाभ मार्जिन`
+                  : `Full production cost (₹${productionCost.toLocaleString('en-IN')}) + ${profitMargin}% artisan margin`}
               </p>
             </div>
 
-            {/* Market Range Benchmark Banner */}
-            <div className="bg-white/10 p-3 rounded-2xl border border-white/15 flex items-center justify-between text-xs relative z-10">
+            {/* Step 2: Recommended Price Range */}
+            <div className="p-3.5 bg-stone-50 rounded-2xl border border-stone-200 flex items-center justify-between text-xs">
               <div>
-                <span className="text-[10px] text-stone-300 uppercase block font-semibold">
-                  {activeLang === 'hi' ? 'प्रोटोटाइप बाजार बेंचमार्क' : 'Prototype Market Benchmark'}
+                <span className="text-[10px] text-stone-500 uppercase font-bold block mb-0.5">
+                  {activeLang === 'hi' ? 'अनुशंसित मूल्य दायरा' : 'Recommended Range'}
                 </span>
-                <span className="font-bold text-white text-sm font-serif">
-                  ₹{(benchmark?.minPrice || 1300).toLocaleString('en-IN')} — ₹{(benchmark?.maxPrice || 1800).toLocaleString('en-IN')}
+                <span className="text-base font-bold font-serif text-slate-900">
+                  ₹{rangeMin.toLocaleString('en-IN')} – ₹{rangeMax.toLocaleString('en-IN')}
                 </span>
               </div>
               <div className="text-right">
-                <span className="text-[10px] text-stone-400 block">{benchmark?.category || category}</span>
-                <span className="text-[10px] bg-emerald-400/20 text-emerald-200 font-bold px-2 py-0.5 rounded border border-emerald-400/30">
-                  Median: ₹{(benchmark?.medianPrice || 1500).toLocaleString('en-IN')}
+                <span className="text-[10px] text-stone-500 block">
+                  {activeLang === 'hi' ? 'टिकाऊ विक्रय बैंड' : 'Sustainable Corridor'}
+                </span>
+                <span className="text-[10px] text-emerald-800 font-bold bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 inline-block">
+                  ±10–15% Deterministic Band
                 </span>
               </div>
             </div>
 
-            {/* 3 Selectable Price Options */}
-            <div className="space-y-2 pt-2 border-t border-white/10 relative z-10">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-stone-300 block mb-1">
-                {activeLang === 'hi' ? 'मूल्य विकल्प चुनें (Select Price Option):' : 'Select a Price Option:'}
-              </span>
+            {/* Step 3: Current Price Comparison & Status */}
+            <div className="p-4 bg-[#FAF6F0] rounded-2xl border border-[#E8DFC8] space-y-2 text-xs">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <span className="text-[10px] text-stone-500 uppercase font-bold block">
+                    {activeLang === 'hi' ? 'आपका वर्तमान मूल्य' : "Artisan's Current Price"}
+                  </span>
+                  <div className="flex items-baseline gap-2 flex-wrap">
+                    <span className="text-2xl font-bold font-serif text-slate-900">
+                      {currentPrice > 0 ? `₹${currentPrice.toLocaleString('en-IN')}` : (activeLang === 'hi' ? 'तय नहीं' : 'Not set')}
+                    </span>
+                    {currentPrice > 0 && (
+                      <span className="text-xs text-stone-600 font-medium">
+                        ({priceDifference < 0
+                          ? `-₹${Math.abs(priceDifference).toLocaleString('en-IN')} (₹${Math.abs(priceDifference).toLocaleString('en-IN')} below suggested)`
+                          : priceDifference > 0
+                          ? `+₹${priceDifference.toLocaleString('en-IN')} (₹${priceDifference.toLocaleString('en-IN')} above suggested)`
+                          : 'Matches suggested price'})
+                      </span>
+                    )}
+                  </div>
+                </div>
 
-              <div className="grid grid-cols-3 gap-2 text-xs">
-                
-                {/* 1. Cost Recovery */}
-                <button
-                  type="button"
-                  onClick={() => handleSelectOption('cost_recovery')}
-                  className={`p-3 rounded-2xl text-left transition-all cursor-pointer border ${
-                    selectedOption === 'cost_recovery'
-                      ? 'bg-amber-500/20 border-amber-400 text-white shadow-xs'
-                      : 'bg-white/5 border-white/10 text-stone-300 hover:bg-white/10'
-                  }`}
-                >
-                  <span className="text-[9px] font-bold uppercase block text-amber-300">Cost Recovery</span>
-                  <span className="text-base font-bold font-serif text-white block my-0.5">
-                    ₹{(pricingResult?.minimumPrice || 1350).toLocaleString('en-IN')}
+                {/* Status Badge */}
+                <div>
+                  <span className={`inline-block px-3 py-1 rounded-full text-xs font-bold border ${statusBadgeClass}`}>
+                    {statusLabel}
                   </span>
-                  <span className="text-[9px] text-stone-400 block leading-tight">
-                    {activeLang === 'hi' ? 'न्यूनतम टिकाऊ मूल्य' : 'Minimum sustainable'}
-                  </span>
-                </button>
-
-                {/* 2. Recommended (Default) */}
-                <button
-                  type="button"
-                  onClick={() => handleSelectOption('recommended')}
-                  className={`p-3 rounded-2xl text-left transition-all cursor-pointer border ${
-                    selectedOption === 'recommended'
-                      ? 'bg-emerald-500/30 border-emerald-400 text-white shadow-sm ring-2 ring-emerald-400/40'
-                      : 'bg-white/5 border-white/10 text-stone-300 hover:bg-white/10'
-                  }`}
-                >
-                  <span className="text-[9px] font-bold uppercase block text-emerald-300">⭐ Recommended</span>
-                  <span className="text-base font-bold font-serif text-white block my-0.5">
-                    ₹{(pricingResult?.recommendedPrice || 1499).toLocaleString('en-IN')}
-                  </span>
-                  <span className="text-[9px] text-stone-400 block leading-tight">
-                    {activeLang === 'hi' ? 'संतुलित लाभ व मांग' : 'Best balance'}
-                  </span>
-                </button>
-
-                {/* 3. Premium */}
-                <button
-                  type="button"
-                  onClick={() => handleSelectOption('premium')}
-                  className={`p-3 rounded-2xl text-left transition-all cursor-pointer border ${
-                    selectedOption === 'premium'
-                      ? 'bg-purple-500/20 border-purple-400 text-white shadow-xs'
-                      : 'bg-white/5 border-white/10 text-stone-300 hover:bg-white/10'
-                  }`}
-                >
-                  <span className="text-[9px] font-bold uppercase block text-purple-300">Premium</span>
-                  <span className="text-base font-bold font-serif text-white block my-0.5">
-                    ₹{(pricingResult?.premiumPrice || 1699).toLocaleString('en-IN')}
-                  </span>
-                  <span className="text-[9px] text-stone-400 block leading-tight">
-                    {activeLang === 'hi' ? 'विशिष्ट हस्तशिल्प' : 'Gallery positioning'}
-                  </span>
-                </button>
+                </div>
               </div>
+
+              {/* Short Helpful Status Explanation */}
+              <p className="text-stone-700 leading-relaxed text-[11px] pt-1.5 border-t border-[#E8DFC8]">
+                {statusExplanation}
+              </p>
             </div>
 
-            {/* Action Button: Use This Price */}
-            <div className="pt-2 relative z-10">
-              <button
-                onClick={handleUseThisPrice}
-                className="w-full py-3.5 rounded-2xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-bold text-sm shadow-md flex items-center justify-center gap-2 transition-all cursor-pointer"
-              >
-                {saveSuccess ? (
-                  <>
-                    <Check className="w-5 h-5 text-emerald-950" />
-                    <span>{activeLang === 'hi' ? 'उत्पाद में सहेजा गया! (Saved)' : 'Price Saved to Product!'}</span>
-                  </>
+            {/* Step 4: Price Factor Breakdown */}
+            <div className="space-y-2 pt-1">
+              <div className="flex items-center justify-between pb-1 border-b border-stone-100">
+                <span className="text-xs font-bold uppercase tracking-wider text-slate-900 flex items-center gap-1.5">
+                  <Layers className="w-3.5 h-3.5 text-[#C25E3E]" />
+                  {activeLang === 'hi' ? 'मूल्य कारक विवरण' : 'Price Factor Breakdown'}
+                </span>
+                <span className="text-[10px] text-stone-400 font-medium">
+                  {activeLang === 'hi' ? 'वास्तविक गणना' : 'Actual calculations'}
+                </span>
+              </div>
+
+              <div className="divide-y divide-stone-100 text-xs">
+                <div className="flex justify-between py-1.5">
+                  <span className="text-stone-600">{activeLang === 'hi' ? 'कच्चा माल' : 'Material Cost'}</span>
+                  <span className="font-bold text-slate-900">₹{(steps?.materialCost ?? Number(materialCost) ?? 0).toLocaleString('en-IN')}</span>
+                </div>
+
+                <div className="flex justify-between py-1.5">
+                  <div>
+                    <span className="text-stone-600 block">{activeLang === 'hi' ? 'कारीगर श्रम' : 'Artisan Labor'}</span>
+                    <span className="text-[10px] text-stone-400">
+                      {hoursRequired} hrs @ ₹{labourRate}/hr
+                    </span>
+                  </div>
+                  <span className="font-bold text-indigo-700 font-mono">
+                    ₹{(steps?.labourCost ?? (Number(labourRate) * Number(hoursRequired))).toLocaleString('en-IN')}
+                  </span>
+                </div>
+
+                <div className="flex justify-between py-1.5">
+                  <span className="text-stone-600">{activeLang === 'hi' ? 'पैकेजिंग' : 'Packaging Cost'}</span>
+                  <span className="font-bold text-slate-900">₹{(steps?.packagingCost ?? Number(packagingCost) ?? 0).toLocaleString('en-IN')}</span>
+                </div>
+
+                <div className="flex justify-between py-1.5">
+                  <span className="text-stone-600">{activeLang === 'hi' ? 'शिपिंग' : 'Shipping Cost'}</span>
+                  <span className="font-bold text-slate-900">₹{(steps?.shippingCost ?? Number(shippingCost) ?? 0).toLocaleString('en-IN')}</span>
+                </div>
+
+                {Boolean((steps?.additionalExpenses ?? Number(additionalExpenses)) > 0) && (
+                  <div className="flex justify-between py-1.5">
+                    <span className="text-stone-600">{activeLang === 'hi' ? 'अन्य खर्च' : 'Other Expenses'}</span>
+                    <span className="font-bold text-slate-900">₹{(steps?.additionalExpenses ?? Number(additionalExpenses) ?? 0).toLocaleString('en-IN')}</span>
+                  </div>
+                )}
+
+                <div className="flex justify-between py-1.5 bg-emerald-50/60 px-2 rounded-lg">
+                  <div>
+                    <span className="text-emerald-900 font-semibold block">{activeLang === 'hi' ? 'कारीगर लाभ मार्जिन' : 'Artisan Margin'}</span>
+                    <span className="text-[10px] text-emerald-700">
+                      {profitMargin}% margin on production cost
+                    </span>
+                  </div>
+                  <span className="font-bold text-emerald-800">₹{profitAmount.toLocaleString('en-IN')}</span>
+                </div>
+
+                {Boolean(steps?.craftsmanshipAdjustment && steps.craftsmanshipAdjustment > 0) && (
+                  <div className="flex justify-between py-1.5 bg-purple-50/60 px-2 rounded-lg">
+                    <div>
+                      <span className="text-purple-900 font-semibold block">{activeLang === 'hi' ? 'कारीगरी मान' : 'Craftsmanship Factor'}</span>
+                      <span className="text-[10px] text-purple-700">{craftComplexity}</span>
+                    </div>
+                    <span className="font-bold text-purple-800">+₹{steps.craftsmanshipAdjustment.toLocaleString('en-IN')}</span>
+                  </div>
+                )}
+
+                {/* Suggested Price Total Line */}
+                <div className="flex justify-between py-2 pt-2.5 font-bold text-slate-900 border-t-2 border-stone-200">
+                  <span className="text-sm font-bold text-slate-900">{activeLang === 'hi' ? 'सुझाया गया मूल्य' : 'Suggested Price'}</span>
+                  <span className="text-base font-serif text-[#C25E3E]">₹{suggestedFairPrice.toLocaleString('en-IN')}</span>
+                </div>
+              </div>
+
+              <p className="text-[10px] text-stone-400 italic text-right pt-0.5">
+                Prototype estimate based on entered costs and pricing factors
+              </p>
+            </div>
+
+            {/* Step 5: Why is this price recommended? */}
+            <div className="p-4 bg-stone-50 rounded-2xl border border-stone-200 space-y-1.5 text-xs">
+              <span className="font-bold text-slate-900 flex items-center gap-1.5">
+                <Info className="w-4 h-4 text-indigo-600" />
+                {activeLang === 'hi' ? 'यह मूल्य क्यों अनुशंसित है?' : 'Why is this price recommended?'}
+              </span>
+              <p className="text-stone-700 leading-relaxed text-[11px]">
+                {dynamicExplanation}
+              </p>
+            </div>
+
+            {/* Step 6: Actions - Use Suggested Price & Edit Price (Strictly only for authenticated artisan owner) */}
+            {isOwner && (
+              <div className="space-y-3 pt-2 border-t border-stone-100">
+                {isEditingPrice ? (
+                  <div className="p-4 bg-stone-50 rounded-2xl border border-stone-300 space-y-3 animate-in fade-in">
+                    <div className="flex items-center justify-between">
+                      <label htmlFor="custom-price-edit-input" className="text-xs font-bold text-slate-900">
+                        {activeLang === 'hi' ? 'अपना कस्टम मूल्य दर्ज करें:' : 'Enter Your Custom Price:'}
+                      </label>
+                      <span className="text-[10px] text-stone-500">
+                        {activeLang === 'hi' ? 'रुपये में (INR)' : 'in INR (₹)'}
+                      </span>
+                    </div>
+                    <div className="relative">
+                      <span className="absolute left-3.5 top-1/2 -translate-y-1/2 font-bold text-stone-400 text-sm">₹</span>
+                      <input
+                        id="custom-price-edit-input"
+                        type="number"
+                        min={1}
+                        step={10}
+                        value={customPriceInput}
+                        onChange={(e) => setCustomPriceInput(e.target.value)}
+                        className="w-full bg-white pl-8 pr-4 py-2.5 rounded-xl border border-stone-300 font-bold text-slate-900 text-sm focus:outline-none focus:border-[#C25E3E]"
+                        placeholder={String(suggestedFairPrice)}
+                      />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        id="save-custom-price-btn"
+                        onClick={handleSaveCustomPrice}
+                        className="flex-1 py-2.5 rounded-xl bg-slate-900 hover:bg-black text-white font-bold text-xs shadow-xs transition-colors cursor-pointer"
+                      >
+                        {activeLang === 'hi' ? 'मूल्य सहेजें (Save Price)' : 'Save Price'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setIsEditingPrice(false)}
+                        className="px-4 py-2.5 rounded-xl border border-stone-300 hover:bg-stone-200 text-stone-700 font-bold text-xs transition-colors cursor-pointer"
+                      >
+                        {activeLang === 'hi' ? 'रद्द करें' : 'Cancel'}
+                      </button>
+                    </div>
+                  </div>
                 ) : (
-                  <>
-                    <BadgeIndianRupee className="w-5 h-5 text-slate-950" />
+                  <div className="flex flex-col sm:flex-row items-center gap-2.5">
+                    <button
+                      type="button"
+                      id="use-suggested-price-btn"
+                      onClick={handleUseSuggestedPrice}
+                      className="w-full sm:flex-1 py-3 px-4 rounded-2xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-xs flex items-center justify-center gap-2 transition-all cursor-pointer"
+                    >
+                      <CheckCircle2 className="w-4 h-4 text-emerald-100" />
+                      <span>
+                        {activeLang === 'hi'
+                          ? `सुझाया गया मूल्य लागू करें (₹${suggestedFairPrice.toLocaleString('en-IN')})`
+                          : `Use Suggested Price (₹${suggestedFairPrice.toLocaleString('en-IN')})`}
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      id="edit-price-btn"
+                      onClick={handleStartEditPrice}
+                      className="w-full sm:w-auto py-3 px-4 rounded-2xl border border-stone-300 hover:bg-stone-100 text-slate-800 font-bold text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                    >
+                      <Pencil className="w-3.5 h-3.5 text-stone-500" />
+                      <span>{activeLang === 'hi' ? 'मूल्य संपादित करें' : 'Edit Price'}</span>
+                    </button>
+                  </div>
+                )}
+
+                {/* Save Confirmation Toast */}
+                {saveSuccess && (
+                  <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-2xl flex items-center gap-2 text-xs font-bold text-emerald-800 animate-in fade-in">
+                    <Check className="w-4 h-4 text-emerald-600 shrink-0" />
                     <span>
                       {activeLang === 'hi'
-                        ? `यह मूल्य चुनें (Use ₹${chosenPrice})`
-                        : `Use This Price (₹${chosenPrice})`}
+                        ? `सफलता! उत्पाद मूल्य ₹${chosenPrice.toLocaleString('en-IN')} सहेज दिया गया है।`
+                        : `Success! Product price updated to ₹${chosenPrice.toLocaleString('en-IN')}.`}
                     </span>
-                  </>
+                  </div>
                 )}
+              </div>
+            )}
+          </div>
+
+          {/* 4. Advanced Tier Options & Prototype Market Benchmark (Preserved for Deep-Dive) */}
+          <div className="bg-white rounded-3xl p-5 border border-stone-200 shadow-xs space-y-4">
+            <div className="flex items-center justify-between pb-2 border-b border-stone-100">
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-900 flex items-center gap-2">
+                <SlidersHorizontal className="w-4 h-4 text-[#C25E3E]" />
+                {activeLang === 'hi' ? 'वैकल्पिक मूल्य स्तर (Pricing Tiers)' : 'Alternative Pricing Tiers'}
+              </span>
+              <span className="text-[10px] text-stone-400 font-medium">
+                {activeLang === 'hi' ? 'प्रोटोटाइप अनुमान' : 'Prototype estimate'}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2 text-xs">
+              {/* 1. Cost Recovery */}
+              <button
+                type="button"
+                onClick={() => handleSelectOption('cost_recovery')}
+                className={`p-3 rounded-2xl text-left transition-all cursor-pointer border ${
+                  selectedOption === 'cost_recovery'
+                    ? 'bg-amber-50 border-amber-400 text-slate-900 shadow-xs ring-1 ring-amber-400'
+                    : 'bg-stone-50 border-stone-200 text-stone-600 hover:bg-stone-100'
+                }`}
+              >
+                <span className="text-[9px] font-bold uppercase block text-amber-700">Cost Recovery</span>
+                <span className="text-base font-bold font-serif text-slate-900 block my-0.5">
+                  ₹{(pricingResult?.minimumPrice || 1350).toLocaleString('en-IN')}
+                </span>
+                <span className="text-[9px] text-stone-400 block leading-tight">
+                  {activeLang === 'hi' ? 'न्यूनतम टिकाऊ' : 'Breakeven floor'}
+                </span>
+              </button>
+
+              {/* 2. Recommended (Default) */}
+              <button
+                type="button"
+                onClick={() => handleSelectOption('recommended')}
+                className={`p-3 rounded-2xl text-left transition-all cursor-pointer border ${
+                  selectedOption === 'recommended'
+                    ? 'bg-emerald-50 border-emerald-500 text-slate-900 shadow-xs ring-2 ring-emerald-400/40'
+                    : 'bg-stone-50 border-stone-200 text-stone-600 hover:bg-stone-100'
+                }`}
+              >
+                <span className="text-[9px] font-bold uppercase block text-emerald-700">⭐ Recommended</span>
+                <span className="text-base font-bold font-serif text-slate-900 block my-0.5">
+                  ₹{(pricingResult?.recommendedPrice || 1499).toLocaleString('en-IN')}
+                </span>
+                <span className="text-[9px] text-stone-400 block leading-tight">
+                  {activeLang === 'hi' ? 'संतुलित लाभ' : 'Fair trade sweetspot'}
+                </span>
+              </button>
+
+              {/* 3. Premium */}
+              <button
+                type="button"
+                onClick={() => handleSelectOption('premium')}
+                className={`p-3 rounded-2xl text-left transition-all cursor-pointer border ${
+                  selectedOption === 'premium'
+                    ? 'bg-purple-50 border-purple-400 text-slate-900 shadow-xs ring-1 ring-purple-400'
+                    : 'bg-stone-50 border-stone-200 text-stone-600 hover:bg-stone-100'
+                }`}
+              >
+                <span className="text-[9px] font-bold uppercase block text-purple-700">Premium</span>
+                <span className="text-base font-bold font-serif text-slate-900 block my-0.5">
+                  ₹{(pricingResult?.premiumPrice || 1699).toLocaleString('en-IN')}
+                </span>
+                <span className="text-[9px] text-stone-400 block leading-tight">
+                  {activeLang === 'hi' ? 'विशिष्ट शिल्प' : 'Heritage position'}
+                </span>
               </button>
             </div>
           </div>
 
-          {/* 4. Complete Price Breakdown Display (Requested Structure) */}
-          {steps && (
-            <div className="bg-white rounded-3xl p-6 border border-stone-200 shadow-xs space-y-4">
-              <div className="flex items-center justify-between pb-2 border-b border-stone-100">
-                <span className="text-xs font-bold uppercase tracking-wider text-slate-900 flex items-center gap-2">
-                  <Layers className="w-4 h-4 text-[#C25E3E]" />
-                  {activeLang === 'hi' ? 'मूल्य विवरण (Price Breakdown)' : 'Price Breakdown Display'}
-                </span>
-                <span className="text-[10px] text-stone-400 font-semibold">
-                  {activeLang === 'hi' ? '100% पारदर्शी' : '100% Transparent'}
-                </span>
-              </div>
-
-              <div className="space-y-2 text-xs">
-                <div className="flex justify-between py-1 border-b border-stone-100">
-                  <span className="text-stone-600">{activeLang === 'hi' ? 'कच्चा माल (Material):' : 'Material:'}</span>
-                  <span className="font-bold text-slate-900">₹{steps.materialCost}</span>
-                </div>
-                <div className="flex justify-between py-1 border-b border-stone-100">
-                  <span className="text-stone-600">
-                    {activeLang === 'hi'
-                      ? `कारीगरी श्रम (${hoursRequired} घंटे @ ₹${labourRate}/घंटा):`
-                      : `Labour (${hoursRequired} hrs @ ₹${labourRate}/hr):`}
-                  </span>
-                  <span className="font-bold text-indigo-700">₹{steps.labourCost}</span>
-                </div>
-                <div className="flex justify-between py-1 border-b border-stone-100">
-                  <span className="text-stone-600">{activeLang === 'hi' ? 'पैकेजिंग (Packaging):' : 'Packaging:'}</span>
-                  <span className="font-bold text-slate-900">₹{steps.packagingCost}</span>
-                </div>
-                <div className="flex justify-between py-1 border-b border-stone-100">
-                  <span className="text-stone-600">{activeLang === 'hi' ? 'शिपिंग (Shipping):' : 'Shipping:'}</span>
-                  <span className="font-bold text-slate-900">₹{steps.shippingCost}</span>
-                </div>
-                {steps.additionalExpenses > 0 && (
-                  <div className="flex justify-between py-1 border-b border-stone-100">
-                    <span className="text-stone-600">{activeLang === 'hi' ? 'अन्य खर्च (Other expenses):' : 'Other expenses:'}</span>
-                    <span className="font-bold text-slate-900">₹{steps.additionalExpenses}</span>
-                  </div>
-                )}
-                
-                {/* Production Cost Total */}
-                <div className="flex justify-between py-2 px-3 bg-stone-100 rounded-xl font-bold text-slate-900 text-xs">
-                  <span>{activeLang === 'hi' ? 'कुल उत्पादन लागत (Production Cost):' : 'Production Cost:'}</span>
-                  <span className="font-serif text-sm">₹{steps.productionCost}</span>
-                </div>
-
-                {/* Profit Added */}
-                <div className="flex justify-between py-1.5 px-3 bg-emerald-50 rounded-xl font-bold text-emerald-900 text-xs">
-                  <span>
-                    {activeLang === 'hi'
-                      ? `लाभ मार्जिन (${profitMargin}% Profit):`
-                      : `Profit (${profitMargin}%):`}
-                  </span>
-                  <span className="font-serif text-sm">
-                    +₹{Math.round(steps.productionCost * (profitMargin / 100))}
-                  </span>
-                </div>
-
-                {/* Base Price */}
-                <div className="flex justify-between py-2 px-3 bg-amber-50 rounded-xl font-bold text-amber-950 text-xs border border-amber-200">
-                  <span>{activeLang === 'hi' ? 'आधार विक्रय मूल्य (Base Price):' : 'Base Price:'}</span>
-                  <span className="font-serif text-sm">₹{steps.baseSellingPrice}</span>
-                </div>
-
-                {/* Market Range & Recommended Price */}
-                <div className="pt-2 border-t border-stone-100 flex flex-col gap-1.5 text-xs">
-                  <div className="flex justify-between text-stone-600">
-                    <span>{activeLang === 'hi' ? 'बाजार दायरा (Market Range):' : 'Market Range:'}</span>
-                    <span className="font-bold text-blue-800">
-                      ₹{(benchmark?.minPrice || 1300).toLocaleString('en-IN')} — ₹{(benchmark?.maxPrice || 1800).toLocaleString('en-IN')}
-                    </span>
-                  </div>
-                  <div className="flex justify-between text-slate-900 font-bold bg-[#FAF6F0] p-2.5 rounded-xl border border-[#E8DFC8]">
-                    <span className="text-[#C25E3E]">
-                      {activeLang === 'hi' ? 'अनुशंसित उचित मूल्य (Recommended Price):' : 'Recommended Price:'}
-                    </span>
-                    <span className="font-serif text-base text-[#C25E3E]">
-                      ₹{(pricingResult?.recommendedPrice || 1499).toLocaleString('en-IN')}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* 5. AI Explanation & "Why This Price?" Checklist */}
+          {/* 5. AI Explanation & Checklist */}
           <div className="bg-white rounded-3xl p-6 border border-stone-200 shadow-xs space-y-4">
             <div className="flex items-center justify-between pb-2 border-b border-stone-100">
               <div className="flex items-center gap-2">
                 <Wand2 className="w-4 h-4 text-purple-600" />
                 <h3 className="text-xs font-bold uppercase tracking-wider text-slate-900">
-                  {activeLang === 'hi' ? 'यह मूल्य क्यों? (Why This Price?)' : 'Transparent Explanation'}
+                  {activeLang === 'hi' ? 'एआई संदर्भ विवरण' : 'Contextual Pricing Checklist'}
                 </h3>
               </div>
               {isGeminiLoading && (
@@ -1038,16 +1339,8 @@ export const KalaPricePage: React.FC<KalaPricePageProps> = ({
               )}
             </div>
 
-            {/* Transparent Text Explanation */}
-            <p className="text-xs leading-relaxed text-stone-700 bg-purple-50/60 p-3.5 rounded-2xl border border-purple-100">
-              {displayExplanation}
-            </p>
-
             {/* Checklist */}
             <div className="space-y-2 pt-1">
-              <span className="text-[11px] font-bold text-slate-800 block">
-                {activeLang === 'hi' ? 'मूल्य निर्धारण कारक (Fair Checklist):' : 'Price Factors Checklist:'}
-              </span>
               {displayReasons.map((reason, idx) => (
                 <div key={idx} className="flex items-start gap-2 text-xs text-stone-700">
                   <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />

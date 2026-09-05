@@ -238,6 +238,11 @@ export async function updateB2BRequestStatusInDb(
     offeredDeliveryDays?: number;
     artisanOfferMessage?: string;
     rejectionReason?: string;
+    acceptedPrice?: number;
+    totalAmount?: number;
+    acceptedAt?: string;
+    orderId?: string;
+    [key: string]: any;
   }
 ): Promise<void> {
   const now = new Date().toISOString();
@@ -247,7 +252,11 @@ export async function updateB2BRequestStatusInDb(
     ...(offerDetails?.offeredDeliveryDays !== undefined ? { offeredDeliveryDays: offerDetails.offeredDeliveryDays } : {}),
     ...(offerDetails?.artisanOfferMessage ? { artisanOfferMessage: offerDetails.artisanOfferMessage } : {}),
     ...(offerDetails?.rejectionReason ? { rejectionReason: offerDetails.rejectionReason } : {}),
+    ...(offerDetails?.acceptedPrice !== undefined ? { acceptedPrice: offerDetails.acceptedPrice } : {}),
+    ...(offerDetails?.totalAmount !== undefined ? { totalAmount: offerDetails.totalAmount } : {}),
+    ...(offerDetails?.orderId ? { orderId: offerDetails.orderId } : {}),
     ...(status === 'Offer Sent' ? { offeredAt: now } : {}),
+    ...(status === 'Accepted' ? { acceptedAt: offerDetails?.acceptedAt || now } : {}),
     updatedAt: now,
   };
 
@@ -255,26 +264,41 @@ export async function updateB2BRequestStatusInDb(
   try {
     const raw = localStorage.getItem(LOCAL_B2B_REQUESTS_KEY);
     const cached: B2BQuoteRequest[] = raw ? JSON.parse(raw) : INITIAL_SAMPLE_B2B_REQUESTS;
-    const updated = cached.map((r) =>
-      r.id === requestId || r.requestId === requestId
-        ? {
-            ...r,
+    const exists = cached.some((r) => r.id === requestId || r.requestId === requestId);
+    const updated = exists
+      ? cached.map((r) =>
+          r.id === requestId || r.requestId === requestId
+            ? {
+                ...r,
+                ...updatePayload,
+              }
+            : r
+        )
+      : [
+          ...cached,
+          {
+            id: requestId,
+            requestId,
+            status,
             ...updatePayload,
-          }
-        : r
-    );
+          } as B2BQuoteRequest,
+        ];
     localStorage.setItem(LOCAL_B2B_REQUESTS_KEY, JSON.stringify(updated));
   } catch (cacheErr) {
     console.warn('Local cache update B2B request status notice:', cacheErr);
   }
 
-  // 2. Firestore update
+  // 2. Firestore update (use setDoc with merge: true so non-seeded or newly synced documents succeed)
   try {
     const docRef = doc(db, B2B_REQUESTS_COLLECTION, requestId);
-    await updateDoc(docRef, {
-      ...updatePayload,
-      dbUpdatedAt: serverTimestamp(),
-    });
+    await setDoc(
+      docRef,
+      {
+        ...updatePayload,
+        dbUpdatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
   } catch (err) {
     console.warn('Firestore update B2B request status notice:', err);
   }

@@ -23,11 +23,16 @@ import {
   X,
   Eye,
   Check,
-  Ban
+  Ban,
+  RotateCcw,
+  ArrowUpDown,
+  User,
+  BadgeIndianRupee
 } from 'lucide-react';
 import { Product, B2BQuoteRequest, LanguageCode, PageTab, ArtisanProfile } from '../../types';
 import { TRANSLATIONS } from '../../utils/translations';
 import { useAuth } from '../../context/AuthContext';
+import { isProductOwner } from '../../utils/artisanProfileUtils';
 
 interface B2BMarketplacePageProps {
   products: Product[];
@@ -36,6 +41,8 @@ interface B2BMarketplacePageProps {
   onOpenSendOffer?: (request: B2BQuoteRequest) => void;
   onOpenB2BListingModal?: (product: Product) => void;
   onSelectProduct?: (product: Product) => void;
+  onViewArtisan?: (artisanId: string) => void;
+  onEditPrice?: (product: Product) => void;
   setCurrentTab: (tab: PageTab) => void;
   currentLang?: LanguageCode;
   artisan?: ArtisanProfile | null;
@@ -49,6 +56,8 @@ export const B2BMarketplacePage: React.FC<B2BMarketplacePageProps> = ({
   onOpenSendOffer,
   onOpenB2BListingModal,
   onSelectProduct,
+  onViewArtisan,
+  onEditPrice,
   setCurrentTab,
   currentLang = 'en',
   artisan,
@@ -57,84 +66,195 @@ export const B2BMarketplacePage: React.FC<B2BMarketplacePageProps> = ({
   const { role, user } = useAuth();
   const [activeSubTab, setActiveSubTab] = useState<'marketplace' | 'buyer_requests' | 'artisan_overview'>('marketplace');
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [selectedCategory, setSelectedCategory] = useState<string>('All');
-  const [selectedCraft, setSelectedCraft] = useState<string>('All');
-  const [selectedMaterial, setSelectedMaterial] = useState<string>('All');
-  const [selectedLocation, setSelectedLocation] = useState<string>('All');
-  const [maxPrice, setMaxPrice] = useState<number>(10000);
-  const [maxMoq, setMaxMoq] = useState<number>(100);
+  const [selectedCategory, setSelectedCategory] = useState<string>('All Categories');
+  const [selectedTechnique, setSelectedTechnique] = useState<string>('All Crafts / Techniques');
+  const [selectedPriceRange, setSelectedPriceRange] = useState<string>('all');
+  const [selectedAvailability, setSelectedAvailability] = useState<string>('all');
+  const [sortOption, setSortOption] = useState<'newest' | 'price_asc' | 'price_desc' | 'name_asc'>('newest');
   const [showMobileFilters, setShowMobileFilters] = useState<boolean>(false);
 
-  // Extract unique filter facets from products
-  const categories = useMemo(() => {
-    const set = new Set<string>();
-    products.forEach((p) => p.category && set.add(p.category));
-    return ['All', ...Array.from(set)];
-  }, [products]);
-
-  const craftTypes = useMemo(() => {
-    const set = new Set<string>();
-    products.forEach((p) => p.craftType && set.add(p.craftType));
-    return ['All', ...Array.from(set)];
-  }, [products]);
-
-  const materials = useMemo(() => {
-    const set = new Set<string>();
-    products.forEach((p) => {
-      if (p.material) set.add(p.material);
-      if (p.materials) p.materials.forEach((m) => set.add(m));
-    });
-    return ['All', ...Array.from(set).slice(0, 8)];
-  }, [products]);
-
-  const locations = useMemo(() => {
-    const set = new Set<string>();
-    products.forEach((p) => {
-      const loc = p.originRegion || p.artisanLocation;
-      if (loc) set.add(loc);
-    });
-    return ['All', ...Array.from(set)];
-  }, [products]);
-
-  // Filter products for B2B wholesale marketplace
-  // (Include all canonical published products listed for B2B)
-  const filteredProducts = useMemo(() => {
+  // Baseline products eligible for B2B Wholesale Marketplace
+  const marketplaceBaseProducts = useMemo(() => {
     return products.filter((p) => {
-      // Must be published and listed for B2B
       const isPublished = p.status === 'published' || p.status === undefined;
       const isB2B = p.publishedToB2B === true || p.isB2BListed === true || (p.wholesalePrice !== undefined && p.wholesalePrice > 0);
-      if (!isPublished || !isB2B) return false;
+      return isPublished && isB2B;
+    });
+  }, [products]);
 
-      const titleMatch = (p.title || '').toLowerCase().includes(searchQuery.toLowerCase());
-      const catMatch = (p.category || '').toLowerCase().includes(searchQuery.toLowerCase());
-      const craftMatch = (p.craftType || '').toLowerCase().includes(searchQuery.toLowerCase());
-      const matMatch = (p.materials || []).some((m) => m.toLowerCase().includes(searchQuery.toLowerCase())) ||
-        (p.material || '').toLowerCase().includes(searchQuery.toLowerCase());
-      const locMatch = (p.originRegion || p.artisanLocation || '').toLowerCase().includes(searchQuery.toLowerCase());
-
-      const queryMatches = !searchQuery || titleMatch || catMatch || craftMatch || matMatch || locMatch;
-      if (!queryMatches) return false;
-
-      if (selectedCategory !== 'All' && p.category !== selectedCategory) return false;
-      if (selectedCraft !== 'All' && p.craftType !== selectedCraft) return false;
-      if (selectedMaterial !== 'All') {
-        const hasMat = (p.materials && p.materials.includes(selectedMaterial)) || p.material === selectedMaterial;
-        if (!hasMat) return false;
+  // Extract unique categories dynamically from products
+  const categories = useMemo(() => {
+    const set = new Set<string>();
+    marketplaceBaseProducts.forEach((p) => {
+      if (p.category && p.category.trim()) {
+        set.add(p.category.trim());
       }
-      if (selectedLocation !== 'All') {
-        const loc = p.originRegion || p.artisanLocation || '';
-        if (!loc.includes(selectedLocation)) return false;
+    });
+    return ['All Categories', ...Array.from(set).sort()];
+  }, [marketplaceBaseProducts]);
+
+  // Extract unique craft / technique facets dynamically from products
+  const craftTechniques = useMemo(() => {
+    const set = new Set<string>();
+    marketplaceBaseProducts.forEach((p) => {
+      if (p.craftType && p.craftType.trim()) {
+        set.add(p.craftType.trim());
+      }
+    });
+    return ['All Crafts / Techniques', ...Array.from(set).sort()];
+  }, [marketplaceBaseProducts]);
+
+  // Check if reliable inventory/stock data exists across products
+  const hasInventoryData = useMemo(() => {
+    return marketplaceBaseProducts.some((p) => {
+      const stock = p.b2bStock ?? p.stock ?? p.inventory;
+      return stock !== undefined && stock !== null;
+    });
+  }, [marketplaceBaseProducts]);
+
+  // Price range definitions using Indian Rupee ₹
+  const PRICE_RANGES = useMemo(() => [
+    { id: 'all', label: 'All Prices' },
+    { id: 'under_1000', label: 'Under ₹1,000' },
+    { id: '1000_5000', label: '₹1,000 – ₹5,000' },
+    { id: '5000_10000', label: '₹5,000 – ₹10,000' },
+    { id: 'above_10000', label: 'Above ₹10,000' },
+  ], []);
+
+  // Filter and sort products
+  const filteredProducts = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+
+    const filtered = marketplaceBaseProducts.filter((p) => {
+      // 1. Search Query across relevant product fields
+      if (query) {
+        const titleMatch = (p.title || '').toLowerCase().includes(query);
+        const titleHindiMatch = (p.titleHindi || '').toLowerCase().includes(query);
+        const catMatch = (p.category || '').toLowerCase().includes(query);
+        const craftMatch = (p.craftType || '').toLowerCase().includes(query);
+        const techMatch = (p.imageAnalysis?.technique || '').toLowerCase().includes(query);
+        
+        // GI tag detection
+        const isGIQuery = query.includes('gi') || query.includes('tag');
+        const giMatch = isGIQuery && (
+          (p.craftType || '').toLowerCase().includes('gi') ||
+          (p.keywords || []).some((k) => k.toLowerCase().includes('gi'))
+        );
+
+        // Keywords
+        const keywordsMatch = (p.keywords || []).some((k) => k.toLowerCase().includes(query));
+
+        // Raw materials
+        const materialsMatch = (p.materials || []).some((m) => m.toLowerCase().includes(query)) ||
+          (p.material || '').toLowerCase().includes(query);
+
+        // Description
+        const descMatch = (p.description || '').toLowerCase().includes(query) ||
+          (p.descriptionHindi || '').toLowerCase().includes(query) ||
+          (p.b2bDescription || '').toLowerCase().includes(query);
+
+        // Artisan & Origin location
+        const artisanMatch = (p.artisanName || '').toLowerCase().includes(query) ||
+          (p.originRegion || '').toLowerCase().includes(query) ||
+          (p.artisanLocation || '').toLowerCase().includes(query);
+
+        const hasMatch = titleMatch || titleHindiMatch || catMatch || craftMatch ||
+          techMatch || giMatch || keywordsMatch || materialsMatch || descMatch || artisanMatch;
+
+        if (!hasMatch) return false;
       }
 
-      const wholesalePrice = p.b2bWholesalePrice || p.wholesalePrice || p.actualPrice || p.suggestedPrice || 0;
-      if (wholesalePrice > maxPrice) return false;
+      // 2. Category Filter
+      if (selectedCategory !== 'All Categories' && p.category !== selectedCategory) {
+        return false;
+      }
 
-      const moq = p.b2bMOQ || p.wholesaleMOQ || p.moq || 1;
-      if (moq > maxMoq) return false;
+      // 3. Craft / Technique Filter
+      if (selectedTechnique !== 'All Crafts / Techniques' && p.craftType !== selectedTechnique) {
+        return false;
+      }
+
+      // 4. Price Range Filter
+      const price = p.b2bWholesalePrice || p.wholesalePrice || p.actualPrice || p.suggestedPrice || p.price || 0;
+      if (selectedPriceRange === 'under_1000' && price >= 1000) return false;
+      if (selectedPriceRange === '1000_5000' && (price < 1000 || price > 5000)) return false;
+      if (selectedPriceRange === '5000_10000' && (price < 5000 || price > 10000)) return false;
+      if (selectedPriceRange === 'above_10000' && price <= 10000) return false;
+
+      // 5. Availability Filter
+      if (hasInventoryData && selectedAvailability !== 'all') {
+        const stock = p.b2bStock ?? p.stock ?? p.inventory;
+        if (selectedAvailability === 'in_stock') {
+          // Do not assume in stock if inventory info is missing
+          if (stock === undefined || stock === null || stock <= 0) return false;
+        } else if (selectedAvailability === 'out_of_stock') {
+          if (stock === undefined || stock === null || stock > 0) return false;
+        }
+      }
 
       return true;
     });
-  }, [products, searchQuery, selectedCategory, selectedCraft, selectedMaterial, selectedLocation, maxPrice, maxMoq]);
+
+    // 6. Sorting
+    return [...filtered].sort((a, b) => {
+      const priceA = a.b2bWholesalePrice || a.wholesalePrice || a.actualPrice || a.suggestedPrice || a.price || 0;
+      const priceB = b.b2bWholesalePrice || b.wholesalePrice || b.actualPrice || b.suggestedPrice || b.price || 0;
+
+      switch (sortOption) {
+        case 'price_asc':
+          return priceA - priceB;
+        case 'price_desc':
+          return priceB - priceA;
+        case 'name_asc':
+          return (a.title || '').localeCompare(b.title || '');
+        case 'newest':
+        default: {
+          const dateA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+          const dateB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+          return dateB - dateA;
+        }
+      }
+    });
+  }, [
+    marketplaceBaseProducts,
+    searchQuery,
+    selectedCategory,
+    selectedTechnique,
+    selectedPriceRange,
+    selectedAvailability,
+    sortOption,
+    hasInventoryData
+  ]);
+
+  // Handler to clear search and all filters
+  const handleClearFilters = () => {
+    setSearchQuery('');
+    setSelectedCategory('All Categories');
+    setSelectedTechnique('All Crafts / Techniques');
+    setSelectedPriceRange('all');
+    setSelectedAvailability('all');
+    setSortOption('newest');
+  };
+
+  const hasActiveFilters = Boolean(
+    searchQuery.trim() ||
+    selectedCategory !== 'All Categories' ||
+    selectedTechnique !== 'All Crafts / Techniques' ||
+    selectedPriceRange !== 'all' ||
+    selectedAvailability !== 'all' ||
+    sortOption !== 'newest'
+  );
+
+  const activeFiltersCount = useMemo(() => {
+    let count = 0;
+    if (searchQuery.trim()) count++;
+    if (selectedCategory !== 'All Categories') count++;
+    if (selectedTechnique !== 'All Crafts / Techniques') count++;
+    if (selectedPriceRange !== 'all') count++;
+    if (selectedAvailability !== 'all') count++;
+    if (sortOption !== 'newest') count++;
+    return count;
+  }, [searchQuery, selectedCategory, selectedTechnique, selectedPriceRange, selectedAvailability, sortOption]);
 
   // Statistics for Artisan / Marketplace Overview
   const activeB2BListingsCount = products.filter(
@@ -255,186 +375,379 @@ export const B2BMarketplacePage: React.FC<B2BMarketplacePageProps> = ({
       {/* TAB 1: BROWSE MARKETPLACE */}
       {activeSubTab === 'marketplace' && (
         <div className="space-y-6">
-          {/* Search & Quick Filter Bar */}
-          <div className="bg-white rounded-2xl border border-stone-200/90 p-4 shadow-xs space-y-4">
-            <div className="flex flex-col md:flex-row gap-3 items-stretch md:items-center">
-              {/* Search Input */}
-              <div className="relative flex-1">
-                <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-stone-400" />
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search wholesale products, craft types, raw materials, or artisan locations..."
-                  id="b2b-marketplace-search-input"
-                  className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-stone-300 focus:border-[#C25E3E] focus:ring-2 focus:ring-[#C25E3E]/20 text-sm font-medium text-slate-900 bg-stone-50/50"
-                />
-                {searchQuery && (
-                  <button
-                    onClick={() => setSearchQuery('')}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-600"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                )}
-              </div>
-
-              {/* Mobile Filter Toggle */}
-              <button
-                onClick={() => setShowMobileFilters(!showMobileFilters)}
-                id="toggle-filters-btn"
-                className="md:hidden px-4 py-2.5 rounded-xl border border-stone-300 bg-stone-50 text-stone-700 text-xs font-bold flex items-center justify-center gap-2"
-              >
-                <SlidersHorizontal className="w-4 h-4 text-[#C25E3E]" />
-                <span>Filters & Facets</span>
-              </button>
-
-              {/* Category Pill Filters */}
-              <div className="hidden md:flex items-center gap-1.5 overflow-x-auto pb-1 max-w-xl">
-                {categories.slice(0, 5).map((cat) => (
-                  <button
-                    key={cat}
-                    onClick={() => setSelectedCategory(cat)}
-                    className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-colors ${
-                      selectedCategory === cat
-                        ? 'bg-[#C25E3E] text-white shadow-2xs'
-                        : 'bg-stone-100 text-stone-600 hover:bg-stone-200'
-                    }`}
-                  >
-                    {cat}
-                  </button>
-                ))}
-              </div>
+          {/* Buyer Discovery & Search Bar and Filters */}
+          <div className="bg-white rounded-3xl border border-stone-200/90 p-4 sm:p-5 shadow-xs space-y-4">
+            {/* Prominent Search Bar */}
+            <div className="relative">
+              <Search className="w-5 h-5 absolute left-3.5 top-1/2 -translate-y-1/2 text-stone-400 pointer-events-none" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search products, crafts, techniques..."
+                id="b2b-marketplace-search-input"
+                className="w-full pl-11 pr-10 py-3 rounded-2xl border border-stone-300 focus:border-[#C25E3E] focus:ring-2 focus:ring-[#C25E3E]/20 text-sm sm:text-base font-medium text-slate-900 bg-stone-50/60 placeholder:text-stone-400 shadow-2xs transition-all"
+              />
+              {searchQuery && (
+                <button
+                  onClick={() => setSearchQuery('')}
+                  id="clear-search-query-btn"
+                  title="Clear search text"
+                  className="absolute right-3.5 top-1/2 -translate-y-1/2 p-1 text-stone-400 hover:text-stone-700 rounded-full hover:bg-stone-200/60 transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
             </div>
 
-            {/* Detailed Filter Selectors (Category, Craft, Material, Location, Price, MOQ) */}
-            <div className={`grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 pt-3 border-t border-stone-100 ${showMobileFilters ? 'block' : 'hidden md:grid'}`}>
+            {/* Desktop Filters Row */}
+            <div className="hidden md:flex flex-wrap items-center gap-3 pt-3 border-t border-stone-100">
               {/* Category Filter */}
-              <div>
-                <label className="block text-[11px] font-bold uppercase text-stone-500 mb-1">Category</label>
+              <div className="min-w-[170px] flex-1">
+                <label htmlFor="filter-category-select" className="block text-[10px] font-bold uppercase tracking-wider text-stone-500 mb-1">
+                  Category
+                </label>
                 <select
                   value={selectedCategory}
                   onChange={(e) => setSelectedCategory(e.target.value)}
                   id="filter-category-select"
-                  className="w-full text-xs py-2 px-2.5 rounded-xl border border-stone-300 bg-white font-medium text-slate-800 focus:border-[#C25E3E]"
+                  className="w-full text-xs py-2 px-3 rounded-xl border border-stone-300 bg-white font-medium text-slate-800 focus:border-[#C25E3E] focus:ring-1 focus:ring-[#C25E3E]"
                 >
-                  {categories.map((c) => (
-                    <option key={c} value={c}>{c}</option>
+                  {categories.map((cat) => (
+                    <option key={cat} value={cat}>{cat}</option>
                   ))}
                 </select>
               </div>
 
-              {/* Craft Type Filter */}
-              <div>
-                <label className="block text-[11px] font-bold uppercase text-stone-500 mb-1">Craft Type</label>
-                <select
-                  value={selectedCraft}
-                  onChange={(e) => setSelectedCraft(e.target.value)}
-                  id="filter-craft-select"
-                  className="w-full text-xs py-2 px-2.5 rounded-xl border border-stone-300 bg-white font-medium text-slate-800 focus:border-[#C25E3E]"
-                >
-                  {craftTypes.map((c) => (
-                    <option key={c} value={c}>{c}</option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Material Filter */}
-              <div>
-                <label className="block text-[11px] font-bold uppercase text-stone-500 mb-1">Material</label>
-                <select
-                  value={selectedMaterial}
-                  onChange={(e) => setSelectedMaterial(e.target.value)}
-                  id="filter-material-select"
-                  className="w-full text-xs py-2 px-2.5 rounded-xl border border-stone-300 bg-white font-medium text-slate-800 focus:border-[#C25E3E]"
-                >
-                  {materials.map((m) => (
-                    <option key={m} value={m}>{m}</option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Location Filter */}
-              <div>
-                <label className="block text-[11px] font-bold uppercase text-stone-500 mb-1">Origin Location</label>
-                <select
-                  value={selectedLocation}
-                  onChange={(e) => setSelectedLocation(e.target.value)}
-                  id="filter-location-select"
-                  className="w-full text-xs py-2 px-2.5 rounded-xl border border-stone-300 bg-white font-medium text-slate-800 focus:border-[#C25E3E]"
-                >
-                  {locations.map((loc) => (
-                    <option key={loc} value={loc}>{loc}</option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Max Price Filter */}
-              <div>
-                <div className="flex justify-between items-center mb-1">
-                  <label className="text-[11px] font-bold uppercase text-stone-500">Max Wholesale ₹</label>
-                  <span className="text-[11px] font-bold text-slate-900">₹{maxPrice}</span>
+              {/* Craft / Technique Filter (Gracefully omitted if no crafts exist) */}
+              {craftTechniques.length > 1 && (
+                <div className="min-w-[170px] flex-1">
+                  <label htmlFor="filter-craft-select" className="block text-[10px] font-bold uppercase tracking-wider text-stone-500 mb-1">
+                    Craft / Technique
+                  </label>
+                  <select
+                    value={selectedTechnique}
+                    onChange={(e) => setSelectedTechnique(e.target.value)}
+                    id="filter-craft-select"
+                    className="w-full text-xs py-2 px-3 rounded-xl border border-stone-300 bg-white font-medium text-slate-800 focus:border-[#C25E3E] focus:ring-1 focus:ring-[#C25E3E]"
+                  >
+                    {craftTechniques.map((craft) => (
+                      <option key={craft} value={craft}>{craft}</option>
+                    ))}
+                  </select>
                 </div>
-                <input
-                  type="range"
-                  min="200"
-                  max="15000"
-                  step="100"
-                  value={maxPrice}
-                  onChange={(e) => setMaxPrice(Number(e.target.value))}
-                  id="filter-price-slider"
-                  className="w-full accent-[#C25E3E] h-1.5 bg-stone-200 rounded-lg cursor-pointer"
-                />
+              )}
+
+              {/* Price Range Filter */}
+              <div className="min-w-[150px] flex-1">
+                <label htmlFor="filter-price-select" className="block text-[10px] font-bold uppercase tracking-wider text-stone-500 mb-1">
+                  Price Range
+                </label>
+                <select
+                  value={selectedPriceRange}
+                  onChange={(e) => setSelectedPriceRange(e.target.value)}
+                  id="filter-price-select"
+                  className="w-full text-xs py-2 px-3 rounded-xl border border-stone-300 bg-white font-medium text-slate-800 focus:border-[#C25E3E] focus:ring-1 focus:ring-[#C25E3E]"
+                >
+                  {PRICE_RANGES.map((rng) => (
+                    <option key={rng.id} value={rng.id}>{rng.label}</option>
+                  ))}
+                </select>
               </div>
 
-              {/* Max MOQ Filter */}
-              <div>
-                <div className="flex justify-between items-center mb-1">
-                  <label className="text-[11px] font-bold uppercase text-stone-500">Max MOQ</label>
-                  <span className="text-[11px] font-bold text-slate-900">{maxMoq} units</span>
+              {/* Availability Filter (Shown if reliable inventory data exists) */}
+              {hasInventoryData && (
+                <div className="min-w-[130px] flex-1">
+                  <label htmlFor="filter-availability-select" className="block text-[10px] font-bold uppercase tracking-wider text-stone-500 mb-1">
+                    Availability
+                  </label>
+                  <select
+                    value={selectedAvailability}
+                    onChange={(e) => setSelectedAvailability(e.target.value)}
+                    id="filter-availability-select"
+                    className="w-full text-xs py-2 px-3 rounded-xl border border-stone-300 bg-white font-medium text-slate-800 focus:border-[#C25E3E] focus:ring-1 focus:ring-[#C25E3E]"
+                  >
+                    <option value="all">All</option>
+                    <option value="in_stock">In Stock</option>
+                    <option value="out_of_stock">Out of Stock</option>
+                  </select>
                 </div>
-                <input
-                  type="range"
-                  min="1"
-                  max="100"
-                  step="5"
-                  value={maxMoq}
-                  onChange={(e) => setMaxMoq(Number(e.target.value))}
-                  id="filter-moq-slider"
-                  className="w-full accent-[#C25E3E] h-1.5 bg-stone-200 rounded-lg cursor-pointer"
-                />
+              )}
+
+              {/* Sort By Control */}
+              <div className="min-w-[160px] flex-1">
+                <label htmlFor="filter-sort-select" className="block text-[10px] font-bold uppercase tracking-wider text-stone-500 mb-1">
+                  Sort By
+                </label>
+                <select
+                  value={sortOption}
+                  onChange={(e) => setSortOption(e.target.value as any)}
+                  id="filter-sort-select"
+                  className="w-full text-xs py-2 px-3 rounded-xl border border-stone-300 bg-white font-medium text-slate-800 focus:border-[#C25E3E] focus:ring-1 focus:ring-[#C25E3E]"
+                >
+                  <option value="newest">Newest</option>
+                  <option value="price_asc">Price: Low to High</option>
+                  <option value="price_desc">Price: High to Low</option>
+                  <option value="name_asc">Name: A to Z</option>
+                </select>
+              </div>
+
+              {/* Clear Filters Action button */}
+              {hasActiveFilters && (
+                <div className="flex items-end self-end pb-0.5">
+                  <button
+                    onClick={handleClearFilters}
+                    id="desktop-clear-filters-btn"
+                    className="px-3 py-2 rounded-xl text-xs font-bold text-[#C25E3E] hover:bg-amber-50 border border-amber-200 transition-colors flex items-center gap-1.5 whitespace-nowrap"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>Clear Filters</span>
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Mobile Filter & Sort Controls */}
+            <div className="md:hidden flex items-center gap-2 pt-2 border-t border-stone-100">
+              <button
+                onClick={() => setShowMobileFilters(!showMobileFilters)}
+                id="toggle-filters-btn"
+                className={`flex-1 px-4 py-2.5 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition-colors ${
+                  showMobileFilters || activeFiltersCount > 0
+                    ? 'border-[#C25E3E] bg-amber-50/60 text-[#C25E3E]'
+                    : 'border-stone-300 bg-stone-50 text-stone-700'
+                }`}
+              >
+                <SlidersHorizontal className="w-4 h-4" />
+                <span>Filters</span>
+                {activeFiltersCount > 0 && (
+                  <span className="w-5 h-5 rounded-full bg-[#C25E3E] text-white text-[10px] font-bold flex items-center justify-center">
+                    {activeFiltersCount}
+                  </span>
+                )}
+              </button>
+
+              <div className="flex-1">
+                <select
+                  value={sortOption}
+                  onChange={(e) => setSortOption(e.target.value as any)}
+                  id="mobile-sort-select"
+                  className="w-full text-xs py-2.5 px-3 rounded-xl border border-stone-300 bg-stone-50 font-medium text-slate-800"
+                >
+                  <option value="newest">Sort: Newest</option>
+                  <option value="price_asc">Price: Low to High</option>
+                  <option value="price_desc">Price: High to Low</option>
+                  <option value="name_asc">Name: A to Z</option>
+                </select>
               </div>
             </div>
+
+            {/* Mobile Expandable Filter Panel */}
+            {showMobileFilters && (
+              <div className="md:hidden pt-4 pb-2 border-t border-stone-200 space-y-3.5 animate-in slide-in-from-top-2 duration-200">
+                <div>
+                  <label className="block text-[11px] font-bold uppercase text-stone-500 mb-1">Category</label>
+                  <select
+                    value={selectedCategory}
+                    onChange={(e) => setSelectedCategory(e.target.value)}
+                    id="mobile-category-select"
+                    className="w-full text-xs py-2.5 px-3 rounded-xl border border-stone-300 bg-white font-medium text-slate-800"
+                  >
+                    {categories.map((c) => (
+                      <option key={c} value={c}>{c}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {craftTechniques.length > 1 && (
+                  <div>
+                    <label className="block text-[11px] font-bold uppercase text-stone-500 mb-1">Craft / Technique</label>
+                    <select
+                      value={selectedTechnique}
+                      onChange={(e) => setSelectedTechnique(e.target.value)}
+                      id="mobile-craft-select"
+                      className="w-full text-xs py-2.5 px-3 rounded-xl border border-stone-300 bg-white font-medium text-slate-800"
+                    >
+                      {craftTechniques.map((c) => (
+                        <option key={c} value={c}>{c}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-[11px] font-bold uppercase text-stone-500 mb-1">Price Range</label>
+                  <select
+                    value={selectedPriceRange}
+                    onChange={(e) => setSelectedPriceRange(e.target.value)}
+                    id="mobile-price-select"
+                    className="w-full text-xs py-2.5 px-3 rounded-xl border border-stone-300 bg-white font-medium text-slate-800"
+                  >
+                    {PRICE_RANGES.map((r) => (
+                      <option key={r.id} value={r.id}>{r.label}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {hasInventoryData && (
+                  <div>
+                    <label className="block text-[11px] font-bold uppercase text-stone-500 mb-1">Availability</label>
+                    <select
+                      value={selectedAvailability}
+                      onChange={(e) => setSelectedAvailability(e.target.value)}
+                      id="mobile-availability-select"
+                      className="w-full text-xs py-2.5 px-3 rounded-xl border border-stone-300 bg-white font-medium text-slate-800"
+                    >
+                      <option value="all">All</option>
+                      <option value="in_stock">In Stock</option>
+                      <option value="out_of_stock">Out of Stock</option>
+                    </select>
+                  </div>
+                )}
+
+                <div className="flex items-center gap-2 pt-2">
+                  <button
+                    onClick={() => setShowMobileFilters(false)}
+                    id="apply-filters-btn"
+                    className="flex-1 py-2.5 rounded-xl bg-[#C25E3E] text-white text-xs font-bold shadow-xs hover:bg-[#A94B2E] transition-colors text-center"
+                  >
+                    Apply Filters
+                  </button>
+                  {hasActiveFilters && (
+                    <button
+                      onClick={() => {
+                        handleClearFilters();
+                        setShowMobileFilters(false);
+                      }}
+                      id="mobile-clear-filters-btn"
+                      className="px-4 py-2.5 rounded-xl border border-stone-300 bg-stone-100 text-stone-700 text-xs font-bold hover:bg-stone-200 transition-colors"
+                    >
+                      Clear Filters
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
 
-          {/* Product Cards Grid */}
-          {filteredProducts.length === 0 ? (
-            <div className="bg-white rounded-3xl border-2 border-dashed border-stone-200 p-12 text-center max-w-xl mx-auto space-y-4">
-              <div className="w-16 h-16 rounded-2xl bg-amber-50 text-[#C25E3E] flex items-center justify-center mx-auto">
-                <Store className="w-8 h-8" />
-              </div>
-              <h3 className="text-lg font-bold text-slate-900">No wholesale listings match your filters</h3>
-              <p className="text-xs sm:text-sm text-stone-500">
-                Try resetting your search query, price bounds, or location parameters.
-              </p>
-              <button
-                onClick={() => {
-                  setSearchQuery('');
-                  setSelectedCategory('All');
-                  setSelectedCraft('All');
-                  setSelectedMaterial('All');
-                  setSelectedLocation('All');
-                  setMaxPrice(10000);
-                  setMaxMoq(100);
-                }}
-                className="px-4 py-2 rounded-xl bg-stone-100 hover:bg-stone-200 text-stone-800 text-xs font-bold transition-colors"
-              >
-                Reset All Filters
-              </button>
+          {/* Results Count & Active Filter Tags Bar */}
+          <div className="flex items-center justify-between flex-wrap gap-2.5 pt-1">
+            <div className="flex items-center gap-2">
+              <h2 className="text-base sm:text-lg font-bold text-slate-900 font-serif" id="marketplace-results-count">
+                {filteredProducts.length === 0
+                  ? 'No products found'
+                  : `${filteredProducts.length} ${filteredProducts.length === 1 ? 'product' : 'products'} found`}
+              </h2>
+              {hasActiveFilters && marketplaceBaseProducts.length > 0 && (
+                <span className="text-xs text-stone-500 font-medium">
+                  (filtered from {marketplaceBaseProducts.length} listings)
+                </span>
+              )}
             </div>
+
+            {hasActiveFilters && (
+              <button
+                onClick={handleClearFilters}
+                id="results-clear-filters-btn"
+                className="text-xs font-bold text-[#C25E3E] hover:text-[#9E3E20] hover:underline flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-50 border border-amber-200/80 transition-colors"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>Clear Filters</span>
+              </button>
+            )}
+          </div>
+
+          {/* Active Filter Chips */}
+          {hasActiveFilters && (
+            <div className="flex items-center gap-2 flex-wrap text-xs">
+              <span className="text-stone-400 font-medium text-[11px]">Active Filters:</span>
+              {searchQuery && (
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-stone-100 text-stone-800 font-medium">
+                  Search: "{searchQuery}"
+                  <button onClick={() => setSearchQuery('')} className="hover:text-red-600"><X className="w-3 h-3" /></button>
+                </span>
+              )}
+              {selectedCategory !== 'All Categories' && (
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-stone-100 text-stone-800 font-medium">
+                  Category: {selectedCategory}
+                  <button onClick={() => setSelectedCategory('All Categories')} className="hover:text-red-600"><X className="w-3 h-3" /></button>
+                </span>
+              )}
+              {selectedTechnique !== 'All Crafts / Techniques' && (
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-stone-100 text-stone-800 font-medium">
+                  Craft: {selectedTechnique}
+                  <button onClick={() => setSelectedTechnique('All Crafts / Techniques')} className="hover:text-red-600"><X className="w-3 h-3" /></button>
+                </span>
+              )}
+              {selectedPriceRange !== 'all' && (
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-stone-100 text-stone-800 font-medium">
+                  Price: {PRICE_RANGES.find(p => p.id === selectedPriceRange)?.label}
+                  <button onClick={() => setSelectedPriceRange('all')} className="hover:text-red-600"><X className="w-3 h-3" /></button>
+                </span>
+              )}
+              {selectedAvailability !== 'all' && (
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-stone-100 text-stone-800 font-medium">
+                  Availability: {selectedAvailability === 'in_stock' ? 'In Stock' : 'Out of Stock'}
+                  <button onClick={() => setSelectedAvailability('all')} className="hover:text-red-600"><X className="w-3 h-3" /></button>
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* Product Cards Grid or Helpful Empty States */}
+          {filteredProducts.length === 0 ? (
+            marketplaceBaseProducts.length === 0 ? (
+              /* State A: Zero products in the marketplace catalog overall */
+              <div className="bg-white rounded-3xl border-2 border-dashed border-stone-200 p-12 text-center max-w-xl mx-auto space-y-4">
+                <div className="w-16 h-16 rounded-2xl bg-amber-50 text-[#C25E3E] flex items-center justify-center mx-auto">
+                  <Store className="w-8 h-8" />
+                </div>
+                <h3 className="text-lg font-bold text-slate-900">No products available yet.</h3>
+                <p className="text-xs sm:text-sm text-stone-500">
+                  Wholesale artisan products will appear here once listed on the marketplace.
+                </p>
+              </div>
+            ) : searchQuery.trim() !== '' ? (
+              /* State B: Search term returned zero results */
+              <div className="bg-white rounded-3xl border-2 border-dashed border-stone-200 p-12 text-center max-w-xl mx-auto space-y-4">
+                <div className="w-16 h-16 rounded-2xl bg-amber-50 text-[#C25E3E] flex items-center justify-center mx-auto">
+                  <Search className="w-8 h-8" />
+                </div>
+                <h3 className="text-lg font-bold text-slate-900">No products found.</h3>
+                <p className="text-xs sm:text-sm text-stone-500">
+                  Try changing your search or filters.
+                </p>
+                <button
+                  onClick={handleClearFilters}
+                  id="clear-filters-empty-btn"
+                  className="px-5 py-2.5 rounded-xl bg-[#C25E3E] hover:bg-[#A94B2E] text-white text-xs font-bold transition-colors shadow-xs"
+                >
+                  Clear Filters
+                </button>
+              </div>
+            ) : (
+              /* State C: Filters applied returned zero results */
+              <div className="bg-white rounded-3xl border-2 border-dashed border-stone-200 p-12 text-center max-w-xl mx-auto space-y-4">
+                <div className="w-16 h-16 rounded-2xl bg-amber-50 text-[#C25E3E] flex items-center justify-center mx-auto">
+                  <SlidersHorizontal className="w-8 h-8" />
+                </div>
+                <h3 className="text-lg font-bold text-slate-900">No products match your selected filters.</h3>
+                <p className="text-xs sm:text-sm text-stone-500">
+                  Try changing your search or filters.
+                </p>
+                <button
+                  onClick={handleClearFilters}
+                  id="clear-filters-empty-btn"
+                  className="px-5 py-2.5 rounded-xl bg-[#C25E3E] hover:bg-[#A94B2E] text-white text-xs font-bold transition-colors shadow-xs"
+                >
+                  Clear Filters
+                </button>
+              </div>
+            )
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
               {filteredProducts.map((prod) => {
+                const fallbackImg = 'https://images.unsplash.com/photo-1578749556568-bc2c40e68b61?auto=format&fit=crop&w=800&q=80';
                 const retailPrice = prod.actualPrice || prod.suggestedPrice || 0;
                 const wholesalePrice = prod.b2bWholesalePrice || prod.wholesalePrice || Math.round(retailPrice * 0.75);
                 const moq = prod.b2bMOQ || prod.wholesaleMOQ || 5;
@@ -454,9 +767,12 @@ export const B2BMarketplacePage: React.FC<B2BMarketplacePageProps> = ({
                       {/* Image Header with Wholesale Badges */}
                       <div className="relative aspect-4/3 bg-stone-100 overflow-hidden">
                         <img
-                          src={prod.enhancedImage || prod.originalImage}
+                          src={prod.enhancedImage || prod.originalImage || prod.image || fallbackImg}
                           alt={prod.title}
                           referrerPolicy="no-referrer"
+                          onError={(e) => {
+                            (e.target as HTMLImageElement).src = fallbackImg;
+                          }}
                           className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
                         />
 
@@ -476,10 +792,28 @@ export const B2BMarketplacePage: React.FC<B2BMarketplacePageProps> = ({
 
                         {/* Bottom Bar on Image: Artisan & Location */}
                         <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent p-3 text-white flex items-center justify-between text-xs">
-                          <div className="flex items-center gap-1.5 truncate">
-                            <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                            <span className="font-semibold truncate">{prod.artisanName || 'Master Artisan'}</span>
-                          </div>
+                          {onViewArtisan ? (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onViewArtisan(prod.artisanId || prod.userId || prod.artisanName || 'sample-artist');
+                              }}
+                              id={`marketplace-card-artisan-${prod.id}`}
+                              className="flex items-center gap-1.5 truncate hover:text-amber-200 transition-colors text-left group/artisan"
+                              title="View Artisan Profile"
+                            >
+                              <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                              <span className="font-semibold truncate underline decoration-white/40 group-hover/artisan:decoration-amber-200">
+                                {prod.artisanName || 'Master Artisan'}
+                              </span>
+                            </button>
+                          ) : (
+                            <div className="flex items-center gap-1.5 truncate">
+                              <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                              <span className="font-semibold truncate">{prod.artisanName || 'Master Artisan'}</span>
+                            </div>
+                          )}
                           <span className="text-[11px] text-stone-300 shrink-0 flex items-center gap-1">
                             <MapPin className="w-3 h-3 text-amber-300" />
                             {prod.originRegion || prod.artisanLocation || 'Jaipur'}
@@ -563,27 +897,50 @@ export const B2BMarketplacePage: React.FC<B2BMarketplacePageProps> = ({
                         <Eye className="w-4 h-4" />
                       </button>
 
+                      {onViewArtisan && (
+                        <button
+                          type="button"
+                          onClick={() => onViewArtisan(prod.artisanId || prod.userId || prod.artisanName || 'sample-artist')}
+                          id={`view-artisan-btn-${prod.id}`}
+                          className="px-2.5 py-2 rounded-xl border border-stone-200 text-stone-700 hover:text-[#C25E3E] hover:border-amber-300 hover:bg-amber-50/50 text-xs font-bold transition-colors flex items-center gap-1 shadow-2xs"
+                          title="View Artisan Profile"
+                        >
+                          <User className="w-3.5 h-3.5 text-[#C25E3E]" />
+                          <span className="text-[11px] hidden sm:inline">Artisan</span>
+                        </button>
+                      )}
+
                       {/* Check if current user is the artisan who owns this product */}
                       {(() => {
-                        const isOwnProduct =
-                          role === 'artisan' &&
-                          ((artisan?.id && prod.userId === artisan.id) ||
-                            (artisan?.name && prod.artisanName === artisan.name) ||
-                            (user?.uid && prod.userId === user.uid));
+                        const isOwnProduct = isProductOwner(prod, role, user, artisan);
 
                         if (isOwnProduct) {
                           return (
-                            <div className="flex-1 flex items-center gap-2">
-                              <span className="px-2.5 py-1 rounded-xl text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300">
+                            <div className="flex-1 flex items-center gap-1.5">
+                              <span className="px-2 py-1 rounded-xl text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300 shrink-0">
                                 Your Listing
                               </span>
+                              {onEditPrice && (
+                                <button
+                                  type="button"
+                                  onClick={() => onEditPrice(prod)}
+                                  id={`edit-price-btn-${prod.id}`}
+                                  className="flex-1 py-2 px-2.5 rounded-xl border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-900 text-xs font-bold shadow-xs transition-all flex items-center justify-center gap-1"
+                                  title="Edit Price with KalaPrice"
+                                >
+                                  <BadgeIndianRupee className="w-3.5 h-3.5 text-[#C25E3E]" />
+                                  <span>Edit Price</span>
+                                </button>
+                              )}
                               <button
+                                type="button"
                                 onClick={() => setActiveSubTab('buyer_requests')}
                                 id={`view-buyer-requests-btn-${prod.id}`}
-                                className="flex-1 py-2 px-3 rounded-xl bg-stone-900 hover:bg-stone-800 text-white text-xs font-bold shadow-xs transition-all flex items-center justify-center gap-1.5"
+                                className="flex-1 py-2 px-2.5 rounded-xl bg-stone-900 hover:bg-stone-800 text-white text-xs font-bold shadow-xs transition-all flex items-center justify-center gap-1"
+                                title="View Buyer Inquiries"
                               >
                                 <Send className="w-3.5 h-3.5" />
-                                <span>View Buyer Requests</span>
+                                <span>Buyer Requests</span>
                               </button>
                             </div>
                           );
@@ -592,6 +949,7 @@ export const B2BMarketplacePage: React.FC<B2BMarketplacePageProps> = ({
                         return (
                           /* Request Quote Button for Buyers and external visitors */
                           <button
+                            type="button"
                             onClick={() => onOpenRequestQuote(prod)}
                             id={`request-quote-btn-${prod.id}`}
                             className="flex-1 py-2.5 px-4 rounded-xl bg-gradient-to-r from-[#C25E3E] to-[#9E3E20] hover:from-[#B14E2E] hover:to-[#8E2E10] text-white text-xs font-bold shadow-xs transition-all flex items-center justify-center gap-2 group-hover:shadow-md"

@@ -37,6 +37,16 @@ service cloud.firestore {
     match /inquiries/{inquiryId} {
       allow read, write: if true;
     }
+
+    // B2B RFQ Quote Requests collection
+    match /b2bRequests/{requestId} {
+      allow read, write: if true;
+    }
+
+    // Notifications collection
+    match /notifications/{notificationId} {
+      allow read, write: if true;
+    }
   }
 }
 

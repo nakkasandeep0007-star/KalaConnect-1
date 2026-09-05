@@ -19,10 +19,12 @@ import {
   Building2,
   Send,
   SlidersHorizontal,
+  Bell,
 } from 'lucide-react';
 import { LanguageCode, PageTab } from '../types';
 import { TRANSLATIONS } from '../utils/translations';
 import { useAuth } from '../context/AuthContext';
+import { useNotifications } from '../context/NotificationContext';
 
 interface SidebarProps {
   currentTab: PageTab;
@@ -44,6 +46,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   unreadMessagesCount = 0,
 }) => {
   const { role } = useAuth();
+  const { unreadCount } = useNotifications();
   const t = TRANSLATIONS[currentLang] || TRANSLATIONS.en;
 
   // Artisan navigation items
@@ -107,6 +110,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
       desc: 'B2B RFQs & Commissions',
     },
     {
+      id: 'activity' as PageTab,
+      label: 'Activity Center',
+      icon: Bell,
+      badge: unreadCount > 0 ? `${unreadCount}` : null,
+      badgeColor: 'bg-[#C25E3E] text-white',
+      desc: 'Notifications & History',
+    },
+    {
       id: 'messages' as PageTab,
       label: 'Messages',
       icon: MessageSquare,
@@ -151,6 +162,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
       desc: 'Track quotes and offers',
     },
     {
+      id: 'orders' as PageTab,
+      label: 'Wholesale Orders',
+      icon: FileText,
+      badge: activeOrdersCount > 0 ? `${activeOrdersCount}` : null,
+      desc: 'Production & Deliveries',
+    },
+    {
+      id: 'activity' as PageTab,
+      label: 'Activity Center',
+      icon: Bell,
+      badge: unreadCount > 0 ? `${unreadCount}` : null,
+      badgeColor: 'bg-[#C25E3E] text-white',
+      desc: 'Notifications & History',
+    },
+    {
       id: 'profile' as PageTab,
       label: 'Business Profile',
       icon: Building2,
@@ -180,14 +206,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
           { id: 'dashboard' as PageTab, label: 'Dashboard', icon: LayoutDashboard },
           { id: 'b2b-marketplace' as PageTab, label: 'Marketplace', icon: Store, highlight: true },
           { id: 'requests' as PageTab, label: 'My RFQs', icon: Send, badge: pendingRequestsCount },
-          { id: 'profile' as PageTab, label: 'Profile', icon: Building2 },
+          { id: 'orders' as PageTab, label: 'Orders', icon: FileText, badge: activeOrdersCount },
+          { id: 'activity' as PageTab, label: 'Activity', icon: Bell, badge: unreadCount },
         ]
       : [
           { id: 'dashboard' as PageTab, label: 'Home', icon: LayoutDashboard },
           { id: 'catalog' as PageTab, label: 'Catalog', icon: ShoppingBag },
-          { id: 'add-product' as PageTab, label: 'Add Product', icon: PlusCircle, highlight: true },
+          { id: 'orders' as PageTab, label: 'Orders', icon: FileText, badge: activeOrdersCount },
           { id: 'requests' as PageTab, label: 'Requests', icon: Inbox, badge: pendingRequestsCount },
-          { id: 'orders' as PageTab, label: 'Orders', icon: FileText },
+          { id: 'activity' as PageTab, label: 'Activity', icon: Bell, badge: unreadCount },
         ];
 
   return (

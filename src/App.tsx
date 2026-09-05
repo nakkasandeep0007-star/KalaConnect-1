@@ -11,6 +11,7 @@ import {
   UserRole,
   B2BQuoteRequest,
   B2BRequestStatus,
+  OrderStatus,
 } from './types';
 import {
   INITIAL_PRODUCTS,
@@ -46,6 +47,8 @@ import { B2BMarketplacePage } from './components/pages/B2BMarketplacePage';
 import { BuyerDashboardPage } from './components/pages/BuyerDashboardPage';
 import { BuyerRequestsPage } from './components/pages/BuyerRequestsPage';
 import { BuyerProfilePage } from './components/pages/BuyerProfilePage';
+import { ArtisanProfilePage } from './components/pages/ArtisanProfilePage';
+import { ActivityCenterPage } from './components/pages/ActivityCenterPage';
 import { ProductDetailModal } from './components/modals/ProductDetailModal';
 import { B2BListingModal } from './components/modals/B2BListingModal';
 import { RequestQuoteModal } from './components/modals/RequestQuoteModal';
@@ -54,9 +57,10 @@ import { useAuth } from './context/AuthContext';
 import { getUserProducts, saveProductToDb } from './services/productService';
 import { getUserPreviousWorks } from './services/previousWorkService';
 import { getArtistRequests } from './services/customerRequestService';
-import { getArtistOrders } from './services/orderService';
+import { getArtistOrders, getUserOrders, saveOrderToDb } from './services/orderService';
 import { getArtistConversations } from './services/conversationService';
 import { getB2BRequests, saveB2BRequestToDb, updateB2BRequestStatusInDb } from './services/b2bRequestService';
+import { createNotificationSafe } from './services/notificationService';
 
 export const App: React.FC = () => {
   const { user, role, artisan: authArtisan, buyerProfile, loading: authLoading, updateProfileData } = useAuth();
@@ -86,12 +90,15 @@ export const App: React.FC = () => {
 
   // Modal inspection states
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+  const [selectedArtisanId, setSelectedArtisanId] = useState<string | null>(null);
   const [priceEditingProductId, setPriceEditingProductId] = useState<string | null>(null);
 
   // B2B Modal states
   const [b2bListingProduct, setB2bListingProduct] = useState<Product | null>(null);
   const [requestQuoteProduct, setRequestQuoteProduct] = useState<Product | null>(null);
   const [sendOfferRequest, setSendOfferRequest] = useState<B2BQuoteRequest | null>(null);
+  const [selectedOrderId, setSelectedOrderId] = useState<string | undefined>(undefined);
+  const [selectedRFQId, setSelectedRFQId] = useState<string | undefined>(undefined);
 
   // Synchronize language if artisan preferredLanguage is set
   useEffect(() => {
@@ -130,7 +137,7 @@ export const App: React.FC = () => {
           getUserProducts(userId),
           getUserPreviousWorks(userId),
           getArtistRequests(userId),
-          getArtistOrders(userId),
+          getUserOrders(userId, effectiveRole, user.email || undefined),
           getArtistConversations(userId),
           getB2BRequests(userId),
         ]);
@@ -183,6 +190,23 @@ export const App: React.FC = () => {
     try {
       const created = await saveB2BRequestToDb(requestData);
       setB2bRequests((prev) => [created, ...prev.filter((r) => r.id !== created.id)]);
+
+      // Feature 6: Safe notification trigger for artisan upon new RFQ
+      if (created && created.artisanId) {
+        createNotificationSafe({
+          notificationId: `notif_rfq_${created.id}`,
+          recipientUserId: created.artisanId,
+          senderUserId: created.buyerId,
+          requestId: created.id,
+          productId: created.productId,
+          type: 'NEW_RFQ',
+          title: 'New Wholesale RFQ Received',
+          message: `${created.buyerOrganization || created.buyerName || 'A B2B Buyer'} requested a quote for ${created.quantity || ''} units of "${created.productTitle || created.productName || 'Handcrafted items'}".`,
+          relatedId: created.id,
+          relatedType: 'RFQ',
+        }).catch((e) => console.warn('RFQ notification notice:', e));
+      }
+
       return created;
     } catch (err) {
       console.error('Failed to create B2B quote request:', err);
@@ -213,6 +237,23 @@ export const App: React.FC = () => {
             : r
         )
       );
+
+      // Feature 6: Safe notification trigger for buyer upon artisan counter-offer
+      const targetReq = b2bRequests.find((r) => r.id === requestId || r.requestId === requestId);
+      if (targetReq?.buyerId) {
+        createNotificationSafe({
+          notificationId: `notif_counter_${targetReq.id}_${offer.offeredPrice}`,
+          recipientUserId: targetReq.buyerId,
+          senderUserId: targetReq.artisanId,
+          requestId: targetReq.id,
+          productId: targetReq.productId,
+          type: 'NEW_COUNTER_OFFER',
+          title: 'New Wholesale Counter-Offer',
+          message: `${effectiveArtisan?.name || user?.name || 'Artisan'} sent a counter-offer of ₹${offer.offeredPrice.toLocaleString('en-IN')}/unit for "${targetReq.productTitle || targetReq.productName || 'Handcrafted items'}". Lead time: ${offer.offeredDeliveryDays || 7} days.`,
+          relatedId: targetReq.id,
+          relatedType: 'COUNTER_OFFER',
+        }).catch((e) => console.warn('Counter-offer notification notice:', e));
+      }
     } catch (err) {
       console.error('Failed to send B2B offer:', err);
     }
@@ -224,20 +265,254 @@ export const App: React.FC = () => {
     details?: any
   ) => {
     try {
-      await updateB2BRequestStatusInDb(requestId, status, details);
+      const targetReq = b2bRequests.find(
+        (r) => r.id === requestId || r.requestId === requestId
+      );
+
+      let orderIdToLink = details?.orderId;
+
+      // When buyer accepts an offer, create exactly ONE order in Feature 5's existing order system
+      if (status === 'Accepted' && targetReq) {
+        // Strict requirement: Accepted price MUST be the artisan's offered wholesale price
+        const acceptedPrice =
+          details?.acceptedPrice !== undefined
+            ? Number(details.acceptedPrice)
+            : targetReq.offeredPrice !== undefined
+            ? Number(targetReq.offeredPrice)
+            : (Number(targetReq.targetPricePerUnit) || Number(targetReq.targetPrice) || 0);
+
+        const quantity = targetReq.quantity || details?.quantity || 1;
+        const totalAmount =
+          details?.totalAmount !== undefined
+            ? Number(details.totalAmount)
+            : acceptedPrice * quantity;
+
+        const leadTimeDays =
+          details?.offeredDeliveryDays !== undefined
+            ? Number(details.offeredDeliveryDays)
+            : (targetReq.offeredDeliveryDays || 7);
+
+        const artisanNote = details?.artisanOfferMessage || targetReq.artisanOfferMessage || '';
+        const now = new Date().toISOString();
+        const deterministicOrderId = `b2b_ord_${requestId.replace(/[^a-zA-Z0-9_-]/g, '')}`;
+        orderIdToLink = deterministicOrderId;
+
+        // Prevent duplicate orders: Check if order already exists
+        const orderExists = orders.some(
+          (o) => o.requestId === requestId || o.id === deterministicOrderId
+        );
+
+        if (!orderExists) {
+          const artistId = targetReq.artisanId || 'sample-artist';
+          const buyerName =
+            targetReq.buyerOrganization ||
+            targetReq.buyerOrg ||
+            targetReq.contactPerson ||
+            targetReq.buyerName ||
+            buyerProfile?.businessName ||
+            buyerProfile?.contactPerson ||
+            user?.name ||
+            'Wholesale Buyer';
+
+          const buyerLoc =
+            targetReq.deliveryLocation ||
+            targetReq.buyerLocation ||
+            buyerProfile?.cityState ||
+            'India';
+
+          const orderNum = `B2B-${new Date().getFullYear()}-${requestId
+            .replace(/[^a-zA-Z0-9]/g, '')
+            .slice(-4)
+            .toUpperCase() || 'DEAL'}`;
+
+          const deadlineDate = new Date(Date.now() + leadTimeDays * 24 * 3600 * 1000)
+            .toISOString()
+            .split('T')[0];
+
+          const newOrderData = {
+            id: deterministicOrderId,
+            requestId,
+            orderNumber: orderNum,
+            customerName: buyerName,
+            customerEmail: buyerProfile?.email || user?.email || '',
+            customerPhone: buyerProfile?.phone || '',
+            customerId: targetReq.buyerId || buyerProfile?.id || user?.uid || '',
+            buyerId: targetReq.buyerId || buyerProfile?.id || user?.uid || '',
+            buyerOrganization: buyerName,
+            customerLocation: buyerLoc,
+            artworkTitle:
+              targetReq.productTitle || targetReq.productName || 'Handcrafted Wholesale Batch',
+            craftType: targetReq.craftType || 'Traditional Craft',
+            description: `Wholesale bulk deal: ${quantity} units of "${
+              targetReq.productTitle || targetReq.productName || 'Artisan Product'
+            }" at ₹${acceptedPrice}/unit. Note: ${artisanNote || 'Wholesale bulk deal confirmed.'}`,
+            referenceImages: targetReq.productImage ? [targetReq.productImage] : [],
+            totalPrice: totalAmount,
+            advanceAmount: Math.round(totalAmount * 0.2),
+            deadlineDate,
+            status: 'accepted' as OrderStatus,
+            progressUpdates: [
+              {
+                id: `p-${Date.now()}`,
+                stageTitle: 'Bulk Deal Confirmed',
+                description: `Wholesale bulk deal confirmed for ${quantity} units at ₹${acceptedPrice}/unit. Total deal value: ₹${totalAmount.toLocaleString(
+                  'en-IN'
+                )}. Lead time: ${leadTimeDays} days.`,
+                timestamp: now,
+                completed: true,
+              },
+            ],
+            paymentMilestones: [
+              {
+                id: 'm-1',
+                title: 'Advance Booking Token (20%)',
+                amount: Math.round(totalAmount * 0.2),
+                percentage: 20,
+                status: 'pending' as const,
+              },
+              {
+                id: 'm-2',
+                title: 'Batch Production & Quality Check (40%)',
+                amount: Math.round(totalAmount * 0.4),
+                percentage: 40,
+                status: 'pending' as const,
+              },
+              {
+                id: 'm-3',
+                title: 'Final Dispatch Clearance (40%)',
+                amount: Math.round(totalAmount * 0.4),
+                percentage: 40,
+                status: 'pending' as const,
+              },
+            ],
+            deliveryTracking: {
+              status: 'confirmed' as const,
+              carrier: 'B2B Logistics Freight / Surface Cargo',
+            },
+          };
+
+          try {
+            const createdOrder = await saveOrderToDb(artistId, newOrderData);
+            setOrders((prev) => [
+              createdOrder,
+              ...prev.filter((o) => o.id !== createdOrder.id && o.requestId !== requestId),
+            ]);
+          } catch (orderErr) {
+            console.error('Failed to save B2B order to DB:', orderErr);
+          }
+        }
+      }
+
+      const mergedDetails = {
+        ...(details || {}),
+        ...(orderIdToLink ? { orderId: orderIdToLink } : {}),
+      };
+
+      await updateB2BRequestStatusInDb(requestId, status, mergedDetails);
+
+      // Feature 6: Notify relevant parties about offer acceptance / decline safely
+      const actorRole = details?.actorRole || (effectiveRole === 'buyer' ? 'buyer' : 'artisan');
+
+      if (actorRole === 'buyer') {
+        if (status === 'Accepted' && targetReq) {
+          // Notify artisan
+          if (targetReq.artisanId) {
+            createNotificationSafe({
+              notificationId: `notif_accept_${targetReq.id}`,
+              recipientUserId: targetReq.artisanId,
+              senderUserId: targetReq.buyerId,
+              requestId: targetReq.id,
+              productId: targetReq.productId,
+              type: 'OFFER_ACCEPTED',
+              title: 'Bulk Offer Accepted! 🎉',
+              message: `${targetReq.buyerOrganization || targetReq.buyerName || 'Buyer'} accepted your wholesale offer of ₹${targetReq.offeredPrice || details?.acceptedPrice}/unit for "${targetReq.productTitle || targetReq.productName || 'Handcrafted items'}". Deal confirmed!`,
+              relatedId: orderIdToLink || targetReq.id,
+              relatedType: 'ORDER',
+            }).catch((e) => console.warn('Offer accepted notification notice:', e));
+          }
+          // Notify buyer
+          const buyerId = targetReq.buyerId || user?.uid;
+          if (buyerId) {
+            createNotificationSafe({
+              notificationId: `notif_deal_confirmed_${targetReq.id}`,
+              recipientUserId: buyerId,
+              senderUserId: targetReq.artisanId,
+              requestId: targetReq.id,
+              productId: targetReq.productId,
+              type: 'ORDER_PLACED',
+              title: 'Bulk Deal Confirmed',
+              message: `Your wholesale order for ${targetReq.quantity || 1} units of "${targetReq.productTitle || targetReq.productName || 'items'}" is confirmed. Production order #${orderIdToLink || targetReq.id} created.`,
+              relatedId: orderIdToLink || targetReq.id,
+              relatedType: 'ORDER',
+            }).catch((e) => console.warn('Order placed notification notice:', e));
+          }
+        } else if (status === 'Rejected' && targetReq) {
+          if (targetReq.artisanId) {
+            createNotificationSafe({
+              notificationId: `notif_declined_${targetReq.id}`,
+              recipientUserId: targetReq.artisanId,
+              senderUserId: targetReq.buyerId,
+              requestId: targetReq.id,
+              productId: targetReq.productId,
+              type: 'OFFER_DECLINED',
+              title: 'Wholesale Offer Declined',
+              message: `${targetReq.buyerOrganization || targetReq.buyerName || 'Buyer'} declined the counter-offer for "${targetReq.productTitle || targetReq.productName || 'item'}".`,
+              relatedId: targetReq.id,
+              relatedType: 'COUNTER_OFFER',
+            }).catch((e) => console.warn('Offer declined notification notice:', e));
+          }
+        }
+      } else {
+        // Artisan accepted or declined buyer's RFQ
+        if (status === 'Accepted' && targetReq) {
+          const buyerId = targetReq.buyerId || user?.uid;
+          if (buyerId) {
+            createNotificationSafe({
+              notificationId: `notif_rfq_accepted_${targetReq.id}`,
+              recipientUserId: buyerId,
+              senderUserId: targetReq.artisanId,
+              requestId: targetReq.id,
+              productId: targetReq.productId,
+              type: 'RFQ_ACCEPTED',
+              title: 'Wholesale Request Accepted! 🎉',
+              message: `${effectiveArtisan?.name || targetReq.artisanName || 'Artisan'} accepted your wholesale request for ${targetReq.quantity || 1} units of "${targetReq.productTitle || targetReq.productName || 'items'}". Deal confirmed!`,
+              relatedId: orderIdToLink || targetReq.id,
+              relatedType: 'ORDER',
+            }).catch((e) => console.warn('RFQ accepted notification notice:', e));
+          }
+        } else if (status === 'Rejected' && targetReq) {
+          const buyerId = targetReq.buyerId || user?.uid;
+          if (buyerId) {
+            createNotificationSafe({
+              notificationId: `notif_rfq_declined_${targetReq.id}`,
+              recipientUserId: buyerId,
+              senderUserId: targetReq.artisanId,
+              requestId: targetReq.id,
+              productId: targetReq.productId,
+              type: 'RFQ_DECLINED',
+              title: 'Quotation Request Declined',
+              message: `${effectiveArtisan?.name || targetReq.artisanName || 'Artisan'} declined the quotation request for "${targetReq.productTitle || targetReq.productName || 'item'}". Reason: ${details?.rejectionReason || 'Declined by artisan'}.`,
+              relatedId: targetReq.id,
+              relatedType: 'RFQ',
+            }).catch((e) => console.warn('RFQ declined notification notice:', e));
+          }
+        }
+      }
+
       setB2bRequests((prev) =>
         prev.map((r) =>
           r.id === requestId || r.requestId === requestId
             ? {
                 ...r,
                 status,
-                ...(details || {}),
+                ...mergedDetails,
               }
             : r
         )
       );
     } catch (err) {
       console.error('Failed to update B2B request status:', err);
+      throw err;
     }
   };
 
@@ -252,7 +527,8 @@ export const App: React.FC = () => {
     currentTab === 'role-selection' ||
     currentTab === 'customer-portal' ||
     currentTab === 'welcome' ||
-    currentTab === 'b2b-marketplace';
+    currentTab === 'b2b-marketplace' ||
+    currentTab === 'artisan-profile';
 
   // If user is not authenticated and is on a protected tab, render AuthPage
   const shouldRenderAuth = !user && !isPublicTab;
@@ -310,6 +586,10 @@ export const App: React.FC = () => {
             }
           }}
           onSelectProduct={setSelectedProduct}
+          onViewArtisan={(artisanId) => {
+            setSelectedArtisanId(artisanId);
+            setCurrentTab('artisan-profile');
+          }}
           onBackToRoleSelection={() => {
             setCurrentTab('auth');
           }}
@@ -342,6 +622,14 @@ export const App: React.FC = () => {
                 : requests.filter((r) => r.status === 'pending').length
             }
             onOpenVoiceHelper={() => setIsVoiceHelperOpen(true)}
+            onSelectOrder={(orderId) => {
+              setSelectedOrderId(orderId);
+              setCurrentTab('orders');
+            }}
+            onSelectQuoteRequest={(rfqId) => {
+              setSelectedRFQId(rfqId);
+              setCurrentTab('requests');
+            }}
           />
 
           <div className="flex-1 flex w-full max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-6 gap-6">
@@ -365,8 +653,8 @@ export const App: React.FC = () => {
             {/* Main Dynamic Viewport */}
             <main className="flex-1 min-w-0 pb-20 md:pb-6">
               
-              {/* Dashboard */}
-              {currentTab === 'dashboard' && (
+              {/* Dashboard & Insights */}
+              {(currentTab === 'dashboard' || currentTab === 'insights') && (
                 effectiveRole === 'buyer' ? (
                   <BuyerDashboardPage
                     products={products}
@@ -374,6 +662,10 @@ export const App: React.FC = () => {
                     setCurrentTab={setCurrentTab}
                     onOpenRequestQuote={(prod) => setRequestQuoteProduct(prod)}
                     onSelectProduct={setSelectedProduct}
+                    onViewArtisan={(artisanId) => {
+                      setSelectedArtisanId(artisanId);
+                      setCurrentTab('artisan-profile');
+                    }}
                     onUpdateB2BRequestStatus={handleUpdateB2BStatus}
                   />
                 ) : effectiveArtisan ? (
@@ -384,6 +676,7 @@ export const App: React.FC = () => {
                     requests={requests}
                     orders={orders}
                     conversations={conversations}
+                    b2bRequests={b2bRequests}
                     setCurrentTab={setCurrentTab}
                     currentLang={currentLang}
                     setSelectedProduct={setSelectedProduct}
@@ -447,10 +740,43 @@ export const App: React.FC = () => {
                   onOpenSendOffer={(req) => setSendOfferRequest(req)}
                   onOpenB2BListingModal={(prod) => setB2bListingProduct(prod)}
                   onSelectProduct={setSelectedProduct}
+                  onViewArtisan={(artisanId) => {
+                    setSelectedArtisanId(artisanId);
+                    setCurrentTab('artisan-profile');
+                  }}
+                  onEditPrice={(prod) => {
+                    setPriceEditingProductId(prod.id);
+                    setCurrentTab('pricing');
+                  }}
                   setCurrentTab={setCurrentTab}
                   currentLang={currentLang}
                   artisan={effectiveArtisan}
                   onUpdateB2BRequestStatus={handleUpdateB2BStatus}
+                />
+              )}
+
+              {/* Public & Authenticated Artisan Profile Page */}
+              {currentTab === 'artisan-profile' && (
+                <ArtisanProfilePage
+                  artisanId={selectedArtisanId || effectiveArtisan?.id || effectiveArtisan?.name || 'sample-artist'}
+                  products={products.length > 0 ? products : INITIAL_PRODUCTS}
+                  currentArtisan={effectiveArtisan}
+                  currentRole={effectiveRole}
+                  currentUserId={user?.uid}
+                  onSelectProduct={setSelectedProduct}
+                  onEditPrice={(prod) => {
+                    setPriceEditingProductId(prod.id);
+                    setCurrentTab('pricing');
+                  }}
+                  onOpenRequestQuote={(prod) => {
+                    if (!user) {
+                      setCurrentTab('auth');
+                    } else {
+                      setRequestQuoteProduct(prod);
+                    }
+                  }}
+                  setCurrentTab={setCurrentTab}
+                  currentLang={currentLang}
                 />
               )}
 
@@ -483,7 +809,7 @@ export const App: React.FC = () => {
               )}
 
               {/* KalaPrice Direct Tool */}
-              {currentTab === 'pricing' && effectiveRole === 'artisan' && (
+              {currentTab === 'pricing' && (
                 <KalaPricePage
                   setCurrentTab={setCurrentTab}
                   currentLang={currentLang}
@@ -500,6 +826,22 @@ export const App: React.FC = () => {
                   setOrders={setOrders}
                   setCurrentTab={setCurrentTab}
                   currentLang={currentLang}
+                  selectedOrderId={selectedOrderId}
+                />
+              )}
+
+              {/* Activity & Notifications Center */}
+              {currentTab === 'activity' && (
+                <ActivityCenterPage
+                  setCurrentTab={setCurrentTab}
+                  onSelectOrder={(orderId) => {
+                    setSelectedOrderId(orderId);
+                    setCurrentTab('orders');
+                  }}
+                  onSelectQuoteRequest={(rfqId) => {
+                    setSelectedRFQId(rfqId);
+                    setCurrentTab('requests');
+                  }}
                 />
               )}
 
@@ -508,9 +850,13 @@ export const App: React.FC = () => {
                 effectiveRole === 'buyer' ? (
                   <BuyerRequestsPage
                     b2bRequests={b2bRequests}
+                    buyerProfile={buyerProfile}
                     setCurrentTab={setCurrentTab}
                     onOpenRequestQuote={(prod) => setRequestQuoteProduct(prod)}
+                    onUpdateB2BStatus={handleUpdateB2BStatus}
                     onUpdateB2BRequestStatus={handleUpdateB2BStatus}
+                    currentLang={currentLang}
+                    selectedRequestId={selectedRFQId}
                   />
                 ) : (
                   <CustomerRequestsPage
@@ -521,6 +867,7 @@ export const App: React.FC = () => {
                     b2bRequests={b2bRequests}
                     onOpenSendOffer={(req) => setSendOfferRequest(req)}
                     onUpdateB2BStatus={handleUpdateB2BStatus}
+                    selectedRequestId={selectedRFQId}
                   />
                 )
               )}
@@ -579,6 +926,11 @@ export const App: React.FC = () => {
         product={selectedProduct}
         onClose={() => setSelectedProduct(null)}
         currentLang={currentLang}
+        onViewArtisan={(artisanId) => {
+          setSelectedArtisanId(artisanId);
+          setSelectedProduct(null);
+          setCurrentTab('artisan-profile');
+        }}
         onEditPrice={(prod) => {
           if (role !== 'artisan' || effectiveRole === 'buyer') {
             return;

@@ -18,6 +18,8 @@ import { LANGUAGES } from '../data/mockData';
 import { TRANSLATIONS } from '../utils/translations';
 import { speakText, stopSpeech } from '../utils/audioSpeech';
 import { useAuth } from '../context/AuthContext';
+import { useNotifications } from '../context/NotificationContext';
+import { NotificationPanel } from './notifications/NotificationPanel';
 
 interface NavbarProps {
   currentTab: PageTab;
@@ -29,6 +31,8 @@ interface NavbarProps {
   setVoiceActive?: React.Dispatch<React.SetStateAction<boolean>>;
   unreadInquiriesCount?: number;
   onOpenVoiceHelper?: () => void;
+  onSelectOrder?: (orderId: string) => void;
+  onSelectQuoteRequest?: (requestId: string) => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -41,10 +45,14 @@ export const Navbar: React.FC<NavbarProps> = ({
   setVoiceActive,
   unreadInquiriesCount = 0,
   onOpenVoiceHelper,
+  onSelectOrder,
+  onSelectQuoteRequest,
 }) => {
   const { user, role, buyerProfile, logout } = useAuth();
+  const { unreadCount } = useNotifications();
   const [langMenuOpen, setLangMenuOpen] = useState(false);
   const [userDropdownOpen, setUserDropdownOpen] = useState(false);
+  const [isNotificationPanelOpen, setIsNotificationPanelOpen] = useState(false);
   const t = TRANSLATIONS[currentLang] || TRANSLATIONS.en;
 
   const toggleVoice = () => {
@@ -190,27 +198,35 @@ export const Navbar: React.FC<NavbarProps> = ({
               )}
             </div>
 
-            {/* Buyer Inquiries / Requests Notification — Only for authenticated users */}
+            {/* Notifications & Activity Center Popover — Only for authenticated users */}
             {user && (
-              <button
-                onClick={() => {
-                  if (role === 'buyer') {
-                    setCurrentTab('requests');
-                  } else {
-                    setCurrentTab('market');
-                  }
-                }}
-                id="notifications-btn"
-                title={role === 'buyer' ? 'My Quotation Requests' : 'B2B Buyer Inquiries'}
-                className="relative p-2 rounded-xl bg-stone-100 hover:bg-stone-200 text-stone-700 transition-colors"
-              >
-                <Bell className="w-4 h-4 sm:w-5 sm:h-5" />
-                {unreadInquiriesCount > 0 && (
-                  <span className="absolute -top-1 -right-1 w-5 h-5 bg-[#C25E3E] text-white text-[11px] font-bold rounded-full flex items-center justify-center border-2 border-white">
-                    {unreadInquiriesCount}
-                  </span>
-                )}
-              </button>
+              <div className="relative">
+                <button
+                  onClick={() => setIsNotificationPanelOpen(!isNotificationPanelOpen)}
+                  id="notifications-btn"
+                  title="Notifications & Activity Center"
+                  className="relative p-2 rounded-xl bg-stone-100 hover:bg-stone-200 text-stone-700 transition-colors"
+                >
+                  <Bell className="w-4 h-4 sm:w-5 sm:h-5" />
+                  {unreadCount > 0 && (
+                    <span className="absolute -top-1 -right-1 min-w-[20px] h-5 px-1 bg-[#C25E3E] text-white text-[11px] font-bold rounded-full flex items-center justify-center border-2 border-white shadow-xs">
+                      {unreadCount > 9 ? '9+' : unreadCount}
+                    </span>
+                  )}
+                </button>
+
+                <NotificationPanel
+                  isOpen={isNotificationPanelOpen}
+                  onClose={() => setIsNotificationPanelOpen(false)}
+                  setCurrentTab={setCurrentTab}
+                  onNavigateToTab={(tab) => {
+                    setIsNotificationPanelOpen(false);
+                    setCurrentTab(tab);
+                  }}
+                  onSelectOrder={onSelectOrder}
+                  onSelectQuoteRequest={onSelectQuoteRequest}
+                />
+              </div>
             )}
 
             {/* Dynamic User Profile or Log In CTA */}
@@ -283,6 +299,23 @@ export const Navbar: React.FC<NavbarProps> = ({
                         </button>
                         <button
                           onClick={() => {
+                            setCurrentTab('activity');
+                            setUserDropdownOpen(false);
+                          }}
+                          className="w-full text-left px-4 py-2 text-xs text-stone-700 hover:bg-stone-50 flex items-center justify-between"
+                        >
+                          <div className="flex items-center gap-2">
+                            <Bell className="w-3.5 h-3.5 text-stone-500" />
+                            <span>Activity & Notifications</span>
+                          </div>
+                          {unreadCount > 0 && (
+                            <span className="text-[10px] bg-[#C25E3E] text-white px-1.5 py-0.2 rounded-full font-bold">
+                              {unreadCount}
+                            </span>
+                          )}
+                        </button>
+                        <button
+                          onClick={() => {
                             setCurrentTab('profile');
                             setUserDropdownOpen(false);
                           }}
@@ -303,6 +336,23 @@ export const Navbar: React.FC<NavbarProps> = ({
                         >
                           <User className="w-3.5 h-3.5 text-stone-500" />
                           <span>Artisan Profile</span>
+                        </button>
+                        <button
+                          onClick={() => {
+                            setCurrentTab('activity');
+                            setUserDropdownOpen(false);
+                          }}
+                          className="w-full text-left px-4 py-2 text-xs text-stone-700 hover:bg-stone-50 flex items-center justify-between"
+                        >
+                          <div className="flex items-center gap-2">
+                            <Bell className="w-3.5 h-3.5 text-stone-500" />
+                            <span>Activity & Notifications</span>
+                          </div>
+                          {unreadCount > 0 && (
+                            <span className="text-[10px] bg-[#C25E3E] text-white px-1.5 py-0.2 rounded-full font-bold">
+                              {unreadCount}
+                            </span>
+                          )}
                         </button>
                         <button
                           onClick={() => {

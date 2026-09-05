@@ -38,6 +38,7 @@ interface CustomerRequestsPageProps {
   b2bRequests?: B2BQuoteRequest[];
   onOpenSendOffer?: (request: B2BQuoteRequest) => void;
   onUpdateB2BStatus?: (requestId: string, status: B2BRequestStatus, details?: any) => Promise<void> | void;
+  selectedRequestId?: string;
 }
 
 export const CustomerRequestsPage: React.FC<CustomerRequestsPageProps> = ({
@@ -48,6 +49,7 @@ export const CustomerRequestsPage: React.FC<CustomerRequestsPageProps> = ({
   b2bRequests = [],
   onOpenSendOffer,
   onUpdateB2BStatus,
+  selectedRequestId,
 }) => {
   const { user, artisan } = useAuth();
   const t = TRANSLATIONS[currentLang] || TRANSLATIONS.en;
@@ -58,6 +60,35 @@ export const CustomerRequestsPage: React.FC<CustomerRequestsPageProps> = ({
   const [isRejectModalOpen, setIsRejectModalOpen] = useState(false);
   const [rejectionReason, setRejectionReason] = useState('');
   const [actionProcessingId, setActionProcessingId] = useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (selectedRequestId) {
+      setRequestChannel('b2b');
+      const match = b2bRequests.find(
+        (r) => r.id === selectedRequestId || r.requestId === selectedRequestId
+      );
+      if (match) {
+        if (match.status === 'New' || match.status === 'Viewed') {
+          setActiveFilter('pending');
+        } else if (match.status === 'Accepted' || match.status === 'Offer Sent') {
+          setActiveFilter('accepted');
+        } else if (match.status === 'Rejected') {
+          setActiveFilter('rejected');
+        } else {
+          setActiveFilter('all');
+        }
+
+        setTimeout(() => {
+          const el = document.getElementById(`artisan-b2b-request-${selectedRequestId}`);
+          if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            el.classList.add('ring-2', 'ring-[#C25E3E]');
+            setTimeout(() => el.classList.remove('ring-2', 'ring-[#C25E3E]'), 3000);
+          }
+        }, 150);
+      }
+    }
+  }, [selectedRequestId, b2bRequests]);
 
   // Filter commission requests
   const filteredCommissionRequests = requests.filter((r) => {
@@ -355,7 +386,7 @@ export const CustomerRequestsPage: React.FC<CustomerRequestsPageProps> = ({
                         {isAccepted && (
                           <span className="px-3 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-1">
                             <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                            Status: Accepted
+                            Status: Deal Confirmed / Order Created
                           </span>
                         )}
                         {isRejected && (
@@ -410,8 +441,8 @@ export const CustomerRequestsPage: React.FC<CustomerRequestsPageProps> = ({
                       </div>
                     </div>
 
-                    {/* Sent Offer Summary (if Offer Sent) */}
-                    {isOfferSent && (
+                    {/* Sent Offer Summary (if Offer Sent and not yet accepted) */}
+                    {isOfferSent && !isAccepted && (
                       <div className="bg-purple-50/70 border border-purple-200/80 p-3.5 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
                         <div className="flex items-center gap-2 text-purple-950 font-medium">
                           <Sparkles className="w-4 h-4 text-purple-700" />
@@ -427,11 +458,31 @@ export const CustomerRequestsPage: React.FC<CustomerRequestsPageProps> = ({
                       </div>
                     )}
 
+                    {/* Deal Confirmed / Order Created Summary (if Accepted) */}
+                    {isAccepted && (
+                      <div className="bg-emerald-50 border border-emerald-200 p-3.5 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                        <div className="flex items-center gap-2 text-emerald-950 font-medium">
+                          <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                          <span>
+                            Buyer accepted wholesale counter-offer of <strong className="text-emerald-900 font-bold">₹{req.acceptedPrice || req.offeredPrice || targetPrice}/unit</strong>. Total Deal Value: <strong className="text-emerald-900 font-bold">₹{(req.totalAmount || ((Number(req.acceptedPrice || req.offeredPrice || targetPrice)) * (req.quantity || 1))).toLocaleString('en-IN')}</strong>. Deal confirmed & order generated!
+                          </span>
+                        </div>
+                        {req.orderId && (
+                          <button
+                            onClick={() => setCurrentTab('orders')}
+                            className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shrink-0 transition-colors shadow-xs"
+                          >
+                            View Linked Order →
+                          </button>
+                        )}
+                      </div>
+                    )}
+
                     {/* Bottom Actions Row: [ Accept ] [ Send Offer ] [ Reject ] */}
                     <div className="flex items-center justify-end gap-3 pt-2 flex-wrap">
                       <button
                         onClick={() => handleB2BReject(req)}
-                        disabled={isRejected}
+                        disabled={isRejected || isAccepted}
                         id={`reject-b2b-${req.id || req.requestId}`}
                         className="px-4 py-2 rounded-xl border border-rose-200 text-rose-700 hover:bg-rose-50 text-xs font-bold transition-colors disabled:opacity-40"
                       >
@@ -457,7 +508,7 @@ export const CustomerRequestsPage: React.FC<CustomerRequestsPageProps> = ({
                         className="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-xs transition-colors flex items-center gap-1.5 disabled:opacity-40"
                       >
                         <Check className="w-4 h-4" />
-                        <span>{isAccepted ? 'Accepted' : 'Accept Request'}</span>
+                        <span>{isAccepted ? 'Deal Confirmed' : 'Accept Request'}</span>
                       </button>
                     </div>
 

@@ -29,12 +29,14 @@ import {
   updateOrderStatus,
 } from '../../services/orderService';
 import { compressDataUrl } from '../../utils/imageCompression';
+import { createNotificationSafe } from '../../services/notificationService';
 
 interface OrdersPageProps {
   orders: CustomOrder[];
   setOrders: React.Dispatch<React.SetStateAction<CustomOrder[]>>;
   setCurrentTab: (tab: PageTab) => void;
   currentLang: LanguageCode;
+  selectedOrderId?: string;
 }
 
 export const OrdersPage: React.FC<OrdersPageProps> = ({
@@ -42,12 +44,25 @@ export const OrdersPage: React.FC<OrdersPageProps> = ({
   setOrders,
   setCurrentTab,
   currentLang,
+  selectedOrderId,
 }) => {
-  const { user } = useAuth();
+  const { user, role, buyerProfile } = useAuth();
   const t = TRANSLATIONS[currentLang] || TRANSLATIONS.en;
 
   const [selectedOrder, setSelectedOrder] = useState<CustomOrder | null>(null);
   const [statusFilter, setStatusFilter] = useState<'all' | 'in_progress' | 'completed'>('all');
+
+  // Auto-select order if selectedOrderId prop is provided
+  React.useEffect(() => {
+    if (selectedOrderId) {
+      const match = orders.find(
+        (o) => o.id === selectedOrderId || o.orderNumber === selectedOrderId
+      );
+      if (match) {
+        setSelectedOrder(match);
+      }
+    }
+  }, [selectedOrderId, orders]);
 
   // New Progress Update form state
   const [isAddProgressOpen, setIsAddProgressOpen] = useState(false);
@@ -56,7 +71,26 @@ export const OrdersPage: React.FC<OrdersPageProps> = ({
   const [stageImage, setStageImage] = useState<string | null>(null);
   const [isSavingProgress, setIsSavingProgress] = useState(false);
 
-  const filteredOrders拼 = orders.filter((o) => {
+  const userRoleOrders = orders.filter((o) => {
+    if (role === 'buyer') {
+      if (!user) return true;
+      const matchesBuyer =
+        o.buyerId === user.uid ||
+        o.customerId === user.uid ||
+        (user.email && o.customerEmail === user.email) ||
+        (buyerProfile?.id && (o.buyerId === buyerProfile.id || o.customerId === buyerProfile.id)) ||
+        (buyerProfile?.businessName && o.customerName === buyerProfile.businessName) ||
+        o.id.startsWith('b2b_ord_');
+      return matchesBuyer;
+    }
+    // Artisan
+    if (!user) return true;
+    return !o.artistId || o.artistId === user.uid || o.artistId === 'sample-artist';
+  });
+
+  const displayOrders = userRoleOrders.length > 0 ? userRoleOrders : orders;
+
+  const filteredOrders拼 = displayOrders.filter((o) => {
     if (statusFilter === 'all') return true;
     if (statusFilter === 'in_progress') return o.status !== 'completed' && o.status !== 'delivered';
     if (statusFilter === 'completed') return o.status === 'completed' || o.status === 'delivered';
@@ -139,16 +173,105 @@ export const OrdersPage: React.FC<OrdersPageProps> = ({
     }
   };
 
+  const getOrderBuyerRecipientId = (order: CustomOrder): string => {
+    if (order.buyerId) return order.buyerId;
+    if (order.customerId) return order.customerId;
+    if (role === 'buyer' && user?.uid) return user.uid;
+    try {
+      const raw = localStorage.getItem('kalaconnect_accounts_list');
+      if (raw) {
+        const accounts = JSON.parse(raw);
+        const arr = Array.isArray(accounts) ? accounts : Object.values(accounts);
+        const buyerAcc = arr.find(
+          (a: any) =>
+            a.role === 'buyer' &&
+            (a.email === order.customerEmail ||
+              a.buyerProfile?.businessName === order.customerName ||
+              a.name === order.customerName)
+        );
+        if (buyerAcc && buyerAcc.id) return buyerAcc.id;
+        const anyBuyer = arr.find((a: any) => a.role === 'buyer');
+        if (anyBuyer?.id) return anyBuyer.id;
+      }
+    } catch {}
+    return 'buyer-user-default';
+  };
+
   const handleAdvanceOrderStatus = async (nextStatus: OrderStatus) => {
     if (!selectedOrder) return;
-    const artistId = user?.uid || 'sample-artist';
+    const artistId = selectedOrder.artistId || user?.uid || 'sample-artist';
     try {
       await updateOrderStatus(selectedOrder.id, artistId, nextStatus);
       const updatedOrder = { ...selectedOrder, status: nextStatus };
       setOrders((prev) => prev.map((o) => (o.id === selectedOrder.id ? updatedOrder : o)));
       setSelectedOrder(updatedOrder);
+
+      // Safe non-blocking notification trigger for Buyer
+      const buyerId = getOrderBuyerRecipientId(selectedOrder);
+      if (buyerId) {
+        if (nextStatus === 'processing' || nextStatus === 'in_progress') {
+          createNotificationSafe({
+            notificationId: `notif_order_${selectedOrder.id}_processing`,
+            recipientUserId: buyerId,
+            type: 'ORDER_PROCESSING',
+            title: 'Order Update',
+            message: 'Your order is now being processed.',
+            relatedId: selectedOrder.id,
+            relatedType: 'ORDER',
+          }).catch((e) => console.warn('Order processing notif notice:', e));
+        } else if (nextStatus === 'shipped') {
+          createNotificationSafe({
+            notificationId: `notif_order_${selectedOrder.id}_shipped`,
+            recipientUserId: buyerId,
+            type: 'ORDER_SHIPPED',
+            title: 'Order Shipped',
+            message: 'Your order has been shipped.',
+            relatedId: selectedOrder.id,
+            relatedType: 'ORDER',
+          }).catch((e) => console.warn('Order shipped notif notice:', e));
+        } else if (nextStatus === 'delivered') {
+          createNotificationSafe({
+            notificationId: `notif_order_${selectedOrder.id}_delivered`,
+            recipientUserId: buyerId,
+            type: 'ORDER_DELIVERED',
+            title: 'Order Delivered',
+            message: 'Your order has been marked as delivered. Please confirm receipt.',
+            relatedId: selectedOrder.id,
+            relatedType: 'ORDER',
+          }).catch((e) => console.warn('Order delivered notif notice:', e));
+        }
+      }
     } catch (err) {
       console.error('Error updating order status:', err);
+    }
+  };
+
+  const handleConfirmDelivery = async (orderToConfirm?: CustomOrder) => {
+    const target = orderToConfirm || selectedOrder;
+    if (!target) return;
+    const artistId = target.artistId || 'sample-artist';
+    try {
+      await updateOrderStatus(target.id, artistId, 'completed');
+      const updatedOrder = { ...target, status: 'completed' as OrderStatus };
+      setOrders((prev) => prev.map((o) => (o.id === target.id ? updatedOrder : o)));
+      if (selectedOrder && selectedOrder.id === target.id) {
+        setSelectedOrder(updatedOrder);
+      }
+
+      // Safe non-blocking notification trigger for Artisan
+      if (target.artistId) {
+        createNotificationSafe({
+          notificationId: `notif_delivery_confirmed_${target.id}`,
+          recipientUserId: target.artistId,
+          type: 'ORDER_COMPLETED',
+          title: 'Order Completed',
+          message: `Buyer confirmed delivery for Order #${target.orderNumber}.`,
+          relatedId: target.id,
+          relatedType: 'ORDER',
+        }).catch((e) => console.warn('Order completed notif notice:', e));
+      }
+    } catch (err) {
+      console.error('Error confirming delivery:', err);
     }
   };
 
@@ -299,12 +422,24 @@ export const OrdersPage: React.FC<OrdersPageProps> = ({
                   </div>
 
                   <div className="flex items-center gap-2">
+                    {role === 'buyer' && order.status === 'delivered' && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleConfirmDelivery(order);
+                        }}
+                        className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1 shadow-xs transition-colors"
+                      >
+                        <Check className="w-3.5 h-3.5" />
+                        <span>Confirm Receipt</span>
+                      </button>
+                    )}
                     <button
                       onClick={() => setSelectedOrder(order)}
                       className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold flex items-center gap-1.5 transition-colors"
                     >
                       <Eye className="w-3.5 h-3.5" />
-                      <span>Manage Order</span>
+                      <span>{role === 'buyer' ? 'View Details' : 'Manage Order'}</span>
                     </button>
                   </div>
                 </div>
@@ -356,25 +491,71 @@ export const OrdersPage: React.FC<OrdersPageProps> = ({
                 </span>
               </div>
 
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => handleAdvanceOrderStatus('in_progress')}
-                  className="px-3 py-1.5 rounded-xl bg-white border border-stone-300 text-xs font-bold text-stone-700 hover:bg-stone-100"
-                >
-                  Mark In Progress
-                </button>
-                <button
-                  onClick={() => handleAdvanceOrderStatus('ready_for_delivery')}
-                  className="px-3 py-1.5 rounded-xl bg-white border border-stone-300 text-xs font-bold text-stone-700 hover:bg-stone-100"
-                >
-                  Ready for Delivery
-                </button>
-                <button
-                  onClick={() => handleAdvanceOrderStatus('completed')}
-                  className="px-3 py-1.5 rounded-xl bg-emerald-600 text-white text-xs font-bold hover:bg-emerald-700"
-                >
-                  Mark Completed
-                </button>
+              <div className="flex items-center gap-2 flex-wrap">
+                {role !== 'buyer' ? (
+                  <>
+                    <button
+                      onClick={() => handleAdvanceOrderStatus('processing')}
+                      className={`px-3 py-1.5 rounded-xl border text-xs font-bold transition-colors ${
+                        selectedOrder.status === 'processing'
+                          ? 'bg-blue-600 text-white border-blue-600'
+                          : 'bg-white border-stone-300 text-stone-700 hover:bg-stone-100'
+                      }`}
+                    >
+                      Mark Processing
+                    </button>
+                    <button
+                      onClick={() => handleAdvanceOrderStatus('shipped')}
+                      className={`px-3 py-1.5 rounded-xl border text-xs font-bold transition-colors ${
+                        selectedOrder.status === 'shipped'
+                          ? 'bg-indigo-600 text-white border-indigo-600'
+                          : 'bg-white border-stone-300 text-stone-700 hover:bg-stone-100'
+                      }`}
+                    >
+                      Mark Shipped
+                    </button>
+                    <button
+                      onClick={() => handleAdvanceOrderStatus('delivered')}
+                      className={`px-3 py-1.5 rounded-xl border text-xs font-bold transition-colors ${
+                        selectedOrder.status === 'delivered'
+                          ? 'bg-emerald-600 text-white border-emerald-600'
+                          : 'bg-white border-stone-300 text-stone-700 hover:bg-stone-100'
+                      }`}
+                    >
+                      Mark Delivered
+                    </button>
+                    <button
+                      onClick={() => handleAdvanceOrderStatus('completed')}
+                      className="px-3 py-1.5 rounded-xl bg-slate-900 text-white text-xs font-bold hover:bg-slate-800"
+                    >
+                      Mark Completed
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    {selectedOrder.status === 'delivered' && (
+                      <button
+                        onClick={() => handleConfirmDelivery(selectedOrder)}
+                        id="confirm-delivery-btn"
+                        className="px-4 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold hover:bg-emerald-700 flex items-center gap-1.5 shadow-xs"
+                      >
+                        <Check className="w-4 h-4" />
+                        Confirm Delivery & Complete Deal
+                      </button>
+                    )}
+                    {selectedOrder.status === 'completed' && (
+                      <span className="px-3 py-1.5 rounded-xl bg-emerald-100 text-emerald-800 text-xs font-bold flex items-center gap-1">
+                        <Check className="w-3.5 h-3.5" />
+                        Delivery Confirmed
+                      </span>
+                    )}
+                    {selectedOrder.status !== 'delivered' && selectedOrder.status !== 'completed' && (
+                      <span className="text-xs text-stone-500 italic">
+                        In transit / production. Confirm receipt once delivered.
+                      </span>
+                    )}
+                  </>
+                )}
               </div>
             </div>
 

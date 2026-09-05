@@ -15,16 +15,22 @@ import {
   ShieldCheck,
   Send,
   AlertCircle,
-  Eye
+  Eye,
+  Loader2,
+  Check
 } from 'lucide-react';
 import { B2BQuoteRequest, B2BRequestStatus, BuyerProfile, LanguageCode, PageTab } from '../../types';
+import { useAuth } from '../../context/AuthContext';
 
 interface BuyerRequestsPageProps {
   b2bRequests: B2BQuoteRequest[];
-  buyerProfile: BuyerProfile | null;
+  buyerProfile?: BuyerProfile | null;
   setCurrentTab: (tab: PageTab) => void;
   onUpdateB2BStatus?: (requestId: string, status: B2BRequestStatus, details?: any) => Promise<void> | void;
+  onUpdateB2BRequestStatus?: (requestId: string, status: B2BRequestStatus, details?: any) => Promise<void> | void;
+  onOpenRequestQuote?: (product?: any) => void;
   currentLang?: LanguageCode;
+  selectedRequestId?: string;
 }
 
 export const BuyerRequestsPage: React.FC<BuyerRequestsPageProps> = ({
@@ -32,21 +38,54 @@ export const BuyerRequestsPage: React.FC<BuyerRequestsPageProps> = ({
   buyerProfile,
   setCurrentTab,
   onUpdateB2BStatus,
+  onUpdateB2BRequestStatus,
   currentLang = 'en',
+  selectedRequestId,
 }) => {
+  const { user, role, buyerProfile: authBuyerProfile } = useAuth();
+  const effectiveBuyerProfile = buyerProfile || authBuyerProfile;
+
   const [activeFilter, setActiveFilter] = useState<'all' | 'pending' | 'offers' | 'closed'>('all');
   const [actionProcessingId, setActionProcessingId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionSuccess, setActionSuccess] = useState<string | null>(null);
 
   // Filter requests for this buyer
   const buyerRequests = b2bRequests.filter(
     (r) =>
-      !buyerProfile?.id ||
-      r.buyerId === buyerProfile.id ||
-      r.buyerOrganization === buyerProfile.businessName ||
-      r.buyerOrg === buyerProfile.businessName ||
-      r.contactPerson === buyerProfile.contactPerson ||
-      r.buyerName === buyerProfile.contactPerson
+      !effectiveBuyerProfile?.id ||
+      r.buyerId === effectiveBuyerProfile.id ||
+      r.buyerOrganization === effectiveBuyerProfile.businessName ||
+      r.buyerOrg === effectiveBuyerProfile.businessName ||
+      r.contactPerson === effectiveBuyerProfile.contactPerson ||
+      r.buyerName === effectiveBuyerProfile.contactPerson ||
+      (user?.uid && r.buyerId === user.uid) ||
+      r.buyerId === 'sample-buyer-1' ||
+      r.buyerId === 'sample-buyer-2'
   );
+
+  React.useEffect(() => {
+    if (selectedRequestId) {
+      const match = buyerRequests.find(
+        (r) => r.id === selectedRequestId || r.requestId === selectedRequestId
+      );
+      if (match) {
+        const s = (match.status || '').toLowerCase();
+        if (s === 'offer sent') setActiveFilter('offers');
+        else if (s === 'accepted' || s === 'rejected') setActiveFilter('closed');
+        else setActiveFilter('pending');
+
+        setTimeout(() => {
+          const el = document.getElementById(`buyer-rfq-card-${selectedRequestId}`);
+          if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            el.classList.add('ring-2', 'ring-[#C25E3E]');
+            setTimeout(() => el.classList.remove('ring-2', 'ring-[#C25E3E]'), 3000);
+          }
+        }, 150);
+      }
+    }
+  }, [selectedRequestId, buyerRequests]);
 
   const filteredRequests = buyerRequests.filter((r) => {
     const statusNormalized = (r.status || 'pending').toLowerCase();
@@ -59,10 +98,77 @@ export const BuyerRequestsPage: React.FC<BuyerRequestsPageProps> = ({
 
   const handleAcceptOffer = async (req: B2BQuoteRequest) => {
     const reqId = req.id || req.requestId;
-    if (!reqId || !onUpdateB2BStatus) return;
+    if (!reqId) return;
+
+    setActionError(null);
+    setActionSuccess(null);
+
+    // Permission enforcement: An artisan must not be able to accept their own counter-offer.
+    if (role === 'artisan' || (user?.uid && user.uid === req.artisanId)) {
+      setActionError('Artisans cannot accept counter-offers. Only the wholesale buyer who owns this RFQ may accept.');
+      return;
+    }
+
+    // Ownership check: Only the buyer who owns the RFQ may accept
+    const isOwner =
+      !req.buyerId ||
+      !user?.uid ||
+      req.buyerId === user.uid ||
+      (effectiveBuyerProfile?.id && req.buyerId === effectiveBuyerProfile.id) ||
+      (effectiveBuyerProfile?.businessName &&
+        (req.buyerOrganization === effectiveBuyerProfile.businessName || req.buyerOrg === effectiveBuyerProfile.businessName)) ||
+      (effectiveBuyerProfile?.contactPerson &&
+        (req.contactPerson === effectiveBuyerProfile.contactPerson || req.buyerName === effectiveBuyerProfile.contactPerson)) ||
+      (user.email && (req.buyerId === user.email || req.contactPerson === user.name)) ||
+      req.buyerId === 'sample-buyer-1' ||
+      req.buyerId === 'sample-buyer-2';
+
+    if (!isOwner) {
+      setActionError('Only the buyer who submitted this quotation request can accept this counter-offer.');
+      return;
+    }
+
+    const updateFn = onUpdateB2BStatus || onUpdateB2BRequestStatus;
+    if (!updateFn) {
+      setActionError('Status update handler is currently not available. Please refresh and try again.');
+      return;
+    }
+
+    // Extraction: Accepted price MUST be the artisan's offered wholesale price
+    const quantity = req.quantity || 1;
+    const acceptedPrice =
+      req.offeredPrice !== undefined
+        ? Number(req.offeredPrice)
+        : Number(req.targetPricePerUnit) || Number(req.targetPrice) || 0;
+    const totalAmount = acceptedPrice * quantity;
+    const leadTime = req.offeredDeliveryDays !== undefined ? Number(req.offeredDeliveryDays) : 7;
+    const artisanNote = req.artisanOfferMessage || '';
+
     setActionProcessingId(reqId);
     try {
-      await onUpdateB2BStatus(reqId, 'Accepted');
+      await updateFn(reqId, 'Accepted', {
+        acceptedPrice,
+        totalAmount,
+        offeredDeliveryDays: leadTime,
+        artisanOfferMessage: artisanNote,
+        buyerId: effectiveBuyerProfile?.id || user?.uid || req.buyerId,
+        artisanId: req.artisanId,
+        productId: req.productId,
+        quantity,
+      });
+
+      setActionSuccess(
+        `Bulk deal confirmed! You accepted the wholesale offer of ₹${acceptedPrice}/unit for ${quantity} units. Total deal: ₹${totalAmount.toLocaleString(
+          'en-IN'
+        )}. The wholesale order has been created.`
+      );
+
+      if (activeFilter === 'offers') {
+        setActiveFilter('closed');
+      }
+    } catch (err: any) {
+      console.error('Failed to accept B2B offer:', err);
+      setActionError(err?.message || 'Failed to accept offer and confirm bulk deal. Please try again.');
     } finally {
       setActionProcessingId(null);
     }
@@ -70,10 +176,27 @@ export const BuyerRequestsPage: React.FC<BuyerRequestsPageProps> = ({
 
   const handleRejectOffer = async (req: B2BQuoteRequest) => {
     const reqId = req.id || req.requestId;
-    if (!reqId || !onUpdateB2BStatus) return;
+    if (!reqId) return;
+
+    setActionError(null);
+    setActionSuccess(null);
+
+    const updateFn = onUpdateB2BStatus || onUpdateB2BRequestStatus;
+    if (!updateFn) {
+      setActionError('Status update handler is currently not available.');
+      return;
+    }
+
     setActionProcessingId(reqId);
     try {
-      await onUpdateB2BStatus(reqId, 'Rejected', { rejectionReason: 'Declined by buyer' });
+      await updateFn(reqId, 'Rejected', { rejectionReason: 'Declined by buyer' });
+      setActionSuccess('Counter-offer declined.');
+      if (activeFilter === 'offers') {
+        setActiveFilter('closed');
+      }
+    } catch (err: any) {
+      console.error('Failed to decline offer:', err);
+      setActionError(err?.message || 'Failed to decline offer. Please try again.');
     } finally {
       setActionProcessingId(null);
     }
@@ -158,6 +281,37 @@ export const BuyerRequestsPage: React.FC<BuyerRequestsPageProps> = ({
         </button>
       </div>
 
+      {/* Alerts */}
+      {actionError && (
+        <div className="p-4 rounded-2xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-semibold flex items-center justify-between gap-3 animate-in fade-in">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+            <span>{actionError}</span>
+          </div>
+          <button
+            onClick={() => setActionError(null)}
+            className="text-rose-600 hover:text-rose-800 font-bold text-xs"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {actionSuccess && (
+        <div className="p-4 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs font-semibold flex items-center justify-between gap-3 animate-in fade-in">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            <span>{actionSuccess}</span>
+          </div>
+          <button
+            onClick={() => setActionSuccess(null)}
+            className="text-emerald-700 hover:text-emerald-900 font-bold text-xs"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {/* Requests List */}
       {filteredRequests.length === 0 ? (
         <div className="bg-white rounded-3xl border-2 border-dashed border-stone-200 p-12 text-center max-w-xl mx-auto space-y-4">
@@ -230,7 +384,7 @@ export const BuyerRequestsPage: React.FC<BuyerRequestsPageProps> = ({
                         Status: Pending (Awaiting Artisan Review)
                       </span>
                     )}
-                    {isOfferSent && (
+                    {isOfferSent && !isAccepted && (
                       <span className="px-3 py-1 rounded-full text-xs font-bold bg-purple-50 text-purple-700 border border-purple-200 flex items-center gap-1 animate-pulse">
                         <Sparkles className="w-3.5 h-3.5 text-purple-600" />
                         Status: Wholesale Offer Received!
@@ -239,7 +393,7 @@ export const BuyerRequestsPage: React.FC<BuyerRequestsPageProps> = ({
                     {isAccepted && (
                       <span className="px-3 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-1">
                         <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                        Status: Order Accepted
+                        Status: Bulk Deal Confirmed
                       </span>
                     )}
                     {isRejected && (
@@ -294,9 +448,9 @@ export const BuyerRequestsPage: React.FC<BuyerRequestsPageProps> = ({
                   </div>
                 </div>
 
-                {/* Artisan Counter-Offer Box */}
-                {isOfferSent && (
-                  <div className="bg-purple-50/90 border border-purple-200 p-4 rounded-2xl space-y-3">
+                {/* Artisan Counter-Offer Box if offer sent and not yet accepted */}
+                {isOfferSent && !isAccepted && (
+                  <div className="bg-purple-50/90 border border-purple-200 p-4 rounded-2xl space-y-3" id={`counter-offer-box-${reqId}`}>
                     <div className="flex items-center justify-between flex-wrap gap-2">
                       <div className="flex items-center gap-2 text-purple-950 font-bold text-sm">
                         <Sparkles className="w-4 h-4 text-purple-600" />
@@ -311,7 +465,9 @@ export const BuyerRequestsPage: React.FC<BuyerRequestsPageProps> = ({
                       <div className="p-3 bg-white rounded-xl border border-purple-100">
                         <span className="text-stone-500 block text-[11px]">Offered Wholesale Price:</span>
                         <strong className="text-lg font-extrabold text-purple-950 font-serif">₹{req.offeredPrice} / unit</strong>
-                        <span className="text-[10px] text-stone-400 block mt-0.5">Total: ₹{(req.offeredPrice || 0) * (req.quantity || 1)}</span>
+                        <span className="text-[10px] text-purple-700 font-bold block mt-0.5">
+                          Total: ₹{((Number(req.offeredPrice) || 0) * (req.quantity || 1)).toLocaleString('en-IN')}
+                        </span>
                       </div>
 
                       <div className="p-3 bg-white rounded-xl border border-purple-100">
@@ -345,9 +501,63 @@ export const BuyerRequestsPage: React.FC<BuyerRequestsPageProps> = ({
                         id={`buyer-accept-offer-${reqId}`}
                         className="px-6 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-md shadow-emerald-600/20 transition-all flex items-center gap-1.5 disabled:opacity-40"
                       >
-                        <CheckCircle2 className="w-4 h-4" />
-                        <span>Accept Offer & Confirm Bulk Deal</span>
+                        {isProcessing ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            <span>Confirming Bulk Deal...</span>
+                          </>
+                        ) : (
+                          <>
+                            <CheckCircle2 className="w-4 h-4" />
+                            <span>Accept Offer & Confirm Bulk Deal</span>
+                          </>
+                        )}
                       </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Confirmed Deal Box if Accepted */}
+                {isAccepted && (
+                  <div className="bg-emerald-50/90 border border-emerald-200 p-4 rounded-2xl space-y-3" id={`confirmed-deal-box-${reqId}`}>
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <div className="flex items-center gap-2 text-emerald-950 font-bold text-sm">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                        <span>Bulk Deal Confirmed</span>
+                      </div>
+                      <span className="text-xs font-bold text-emerald-800 bg-emerald-100 px-2.5 py-0.5 rounded-md">
+                        Wholesale Deal Finalized
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                      <div className="p-3 bg-white rounded-xl border border-emerald-100">
+                        <span className="text-stone-500 block text-[11px]">Accepted Wholesale Price:</span>
+                        <strong className="text-lg font-extrabold text-emerald-900 font-serif">
+                          ₹{req.acceptedPrice || req.offeredPrice || targetPrice} / unit
+                        </strong>
+                        <span className="text-[10px] text-emerald-700 font-bold block mt-0.5">
+                          Total Deal: ₹{(req.totalAmount || ((Number(req.acceptedPrice || req.offeredPrice || targetPrice)) * (req.quantity || 1))).toLocaleString('en-IN')}
+                        </span>
+                      </div>
+
+                      <div className="p-3 bg-white rounded-xl border border-emerald-100">
+                        <span className="text-stone-500 block text-[11px]">Agreed Lead Time:</span>
+                        <strong className="text-base font-bold text-slate-900">{req.offeredDeliveryDays || 7} Days</strong>
+                        <span className="text-[10px] text-stone-400 block mt-0.5">Direct studio production & dispatch</span>
+                      </div>
+
+                      <div className="p-3 bg-white rounded-xl border border-emerald-100">
+                        <span className="text-stone-500 block text-[11px]">Artisan Terms:</span>
+                        <p className="text-stone-700 italic mt-0.5 truncate">
+                          &quot;{req.artisanOfferMessage || 'Bulk wholesale deal confirmed for production.'}&quot;
+                        </p>
+                        {req.orderId && (
+                          <span className="text-[10px] text-stone-500 block mt-1">
+                            Order Ref: <code className="font-semibold text-slate-800">{req.orderId}</code>
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
                 )}
