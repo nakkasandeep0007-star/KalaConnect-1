@@ -70,6 +70,12 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
   const currentUserId = user?.uid || '';
   const alternateUserId = role === 'buyer' ? buyerProfile?.id : artisan?.id;
 
+  // Immediately clear notification state whenever the authenticated user changes or logs out.
+  // This completely eliminates stale cache flash, cross-account contamination, or memory retention.
+  useEffect(() => {
+    setNotifications([]);
+  }, [user?.uid]);
+
   const fetchUserNotifs = useCallback(async () => {
     if (!currentUserId) {
       setNotifications([]);
@@ -79,9 +85,11 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
     try {
       setLoading(true);
       const list = await getUserNotifications(currentUserId, role, alternateUserId);
-      setNotifications(list);
+      // Double check that user hasn't switched while awaiting
+      setNotifications(list.filter((n) => n.recipientUserId === currentUserId));
     } catch (err) {
       console.warn('Failed to fetch user notifications:', err);
+      setNotifications([]);
     } finally {
       setLoading(false);
     }
@@ -94,9 +102,13 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
   const handleMarkAsRead = async (notificationId: string) => {
     if (!currentUserId) return;
 
-    // Optimistic local update
+    // Optimistic local update strictly for current user
     setNotifications((prev) =>
-      prev.map((n) => (n.notificationId === notificationId ? { ...n, read: true } : n))
+      prev.map((n) =>
+        n.notificationId === notificationId && n.recipientUserId === currentUserId
+          ? { ...n, read: true }
+          : n
+      )
     );
 
     try {
@@ -109,8 +121,10 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
   const handleMarkAllAsRead = async () => {
     if (!currentUserId) return;
 
-    // Optimistic local update
-    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+    // Optimistic local update strictly for current user's notifications
+    setNotifications((prev) =>
+      prev.map((n) => (n.recipientUserId === currentUserId ? { ...n, read: true } : n))
+    );
 
     try {
       await markAllNotificationsAsRead(currentUserId, alternateUserId);
@@ -134,13 +148,8 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
     try {
       const created = await createNotificationSafe(params);
       if (created) {
-        // If the notification happens to be for the currently logged in user, add it to state
-        const userIdsToMatch = [currentUserId];
-        if (alternateUserId) userIdsToMatch.push(alternateUserId);
-        if (role === 'artisan') userIdsToMatch.push('sample-artist');
-        if (role === 'buyer') userIdsToMatch.push('sample-buyer-1', 'sample-buyer-2');
-
-        const isForCurrentUser = userIdsToMatch.includes(created.recipientUserId);
+        // ONLY append to in-memory state if the authenticated user is the actual recipient!
+        const isForCurrentUser = Boolean(currentUserId && created.recipientUserId === currentUserId);
 
         if (isForCurrentUser) {
           // Strictly ensure role constraints before adding to visible context
@@ -168,8 +177,11 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
     }
   };
 
-  const unreadNotifications = notifications.filter((n) => !n.read);
-  const unreadCount = unreadNotifications.length;
+  // Strictly compute unread notifications only for the authenticated user
+  const unreadNotifications = notifications.filter(
+    (n) => !n.read && Boolean(currentUserId && n.recipientUserId === currentUserId)
+  );
+  const unreadCount = currentUserId ? unreadNotifications.length : 0;
 
   return (
     <NotificationContext.Provider

@@ -127,7 +127,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               setBuyerProfile(matchedAccount.buyerProfile);
               setArtisan(null);
             } else if (matchedAccount.role === 'artisan' && matchedAccount.artisanProfile) {
-              setArtisan(matchedAccount.artisanProfile);
+              const artProf = { ...matchedAccount.artisanProfile, id: matchedAccount.id };
+              setArtisan(artProf);
               setBuyerProfile(null);
             }
           } else if (session.role) {
@@ -142,7 +143,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               setBuyerProfile(session.buyerProfile || null);
               setArtisan(null);
             } else {
-              setArtisan(session.artisanProfile || session.profile || null);
+              const artProf = session.artisanProfile || session.profile || null;
+              if (artProf) {
+                artProf.id = session.id;
+              }
+              setArtisan(artProf);
               setBuyerProfile(null);
             }
           }
@@ -261,23 +266,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           })
         );
       } else {
-        const aProfile = targetAccount.artisanProfile || {
-          name: targetAccount.name,
-          businessName: `${targetAccount.name}'s Studio`,
-          craftType: 'Traditional Handicrafts',
-          experienceYears: 5,
-          location: 'Jaipur',
-          state: 'Rajasthan',
-          phone: '',
+        const aProfile: ArtisanProfile = {
+          ...(targetAccount.artisanProfile || {}),
+          id: targetAccount.id,
+          name: targetAccount.artisanProfile?.name || targetAccount.name,
+          businessName: targetAccount.artisanProfile?.businessName || `${targetAccount.name}'s Studio`,
+          craftType: targetAccount.artisanProfile?.craftType || 'Traditional Handicrafts',
+          experienceYears: targetAccount.artisanProfile?.experienceYears || 5,
+          location: targetAccount.artisanProfile?.location || 'Jaipur',
+          state: targetAccount.artisanProfile?.state || 'Rajasthan',
+          phone: targetAccount.artisanProfile?.phone || '',
           email: targetAccount.email,
-          preferredLanguage: 'en',
-          pehchanId: `IND-ART-${targetAccount.id.slice(-6).toUpperCase()}`,
+          preferredLanguage: targetAccount.artisanProfile?.preferredLanguage || 'en',
+          pehchanId: targetAccount.artisanProfile?.pehchanId || `IND-ART-${targetAccount.id.slice(-6).toUpperCase()}`,
           craftMarkVerified: true,
-          avatarUrl: 'https://images.unsplash.com/photo-1544717305-2782549b5136?auto=format&fit=crop&w=400&q=80',
-          bio: 'Authentic artisan crafting with traditional heritage techniques.',
+          avatarUrl: targetAccount.artisanProfile?.avatarUrl || 'https://images.unsplash.com/photo-1544717305-2782549b5136?auto=format&fit=crop&w=400&q=80',
+          bio: targetAccount.artisanProfile?.bio || 'Authentic artisan crafting with traditional heritage techniques.',
           bankAccountLinked: true,
-          upiId: `${targetAccount.name.toLowerCase().replace(/\s+/g, '')}@upi`,
-          totalEarnings: 0,
+          upiId: targetAccount.artisanProfile?.upiId || `${targetAccount.name.toLowerCase().replace(/\s+/g, '')}@upi`,
+          totalEarnings: targetAccount.artisanProfile?.totalEarnings || 0,
           role: 'artisan',
         };
         setArtisan(aProfile);
@@ -326,6 +333,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const uniqueId = `art_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 
     const newProfile: ArtisanProfile = {
+      id: uniqueId,
       name: cleanName,
       businessName: profileData.businessName?.trim() || `${cleanName}'s Studio`,
       craftType: profileData.craftType || 'Traditional Handicrafts',

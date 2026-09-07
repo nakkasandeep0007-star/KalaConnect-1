@@ -776,7 +776,7 @@ export const AddProductWizard: React.FC<AddProductWizardProps> = ({
 
           <button
             type="button"
-            onClick={() => setCurrentTab('my-kala')}
+            onClick={() => setCurrentTab('catalog')}
             className="self-start sm:self-auto px-3.5 py-1.5 rounded-xl border border-stone-300 text-stone-600 hover:bg-stone-100 text-xs font-semibold"
           >
             Cancel & Return to Catalog
@@ -1719,20 +1719,11 @@ export const AddProductWizard: React.FC<AddProductWizardProps> = ({
               Product Published Successfully!
             </h2>
             <p className="text-xs sm:text-sm text-stone-600">
-              Your craft item is now securely saved in your Firestore database and live in <strong>My Kala</strong>.
+              Your craft item is now securely saved and published.
             </p>
           </div>
 
           <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
-            <button
-              type="button"
-              onClick={() => setCurrentTab('my-kala')}
-              id="success-view-catalog-btn"
-              className="px-6 py-3 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs sm:text-sm transition-colors"
-            >
-              View in My Kala
-            </button>
-
             <button
               type="button"
               onClick={() => setCurrentTab('dashboard')}
@@ -1755,6 +1746,7 @@ export const AddProductWizard: React.FC<AddProductWizardProps> = ({
                 setSubmissionStatus('idle');
                 setActiveStep(1);
               }}
+              id="success-add-another-btn"
               className="px-5 py-3 rounded-xl border border-stone-300 text-stone-700 font-semibold text-xs sm:text-sm hover:bg-stone-100"
             >
               + Add Another Product

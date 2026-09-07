@@ -438,18 +438,18 @@ export const ArtisanProfilePage: React.FC<ArtisanProfilePageProps> = ({
         )}
       </div>
 
-      {/* 5. PRODUCTS BY THIS ARTISAN */}
-      <div className="space-y-4">
+      {/* 5. PREVIOUS WORK BY THIS ARTISAN */}
+      <div id="artisan-previous-work-section" className="space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
-            <h2 className="text-xl sm:text-2xl font-bold text-slate-900 font-serif flex items-center gap-2">
-              <span>Products by this Artisan</span>
+            <h2 id="previous-work-heading" className="text-xl sm:text-2xl font-bold text-slate-900 font-serif flex items-center gap-2">
+              <span>Previous Work</span>
               <span className="text-sm font-sans font-bold px-2.5 py-0.5 rounded-full bg-[#C25E3E]/10 text-[#C25E3E]">
                 {artisanProducts.length}
               </span>
             </h2>
             <p className="text-xs text-stone-500 mt-0.5">
-              Browse authentic items handcrafted directly by {artisan.name || 'this artisan'}
+              Browse handcrafted pieces and previous showcased creations by {artisan.name || 'this artisan'}
             </p>
           </div>
 
@@ -499,13 +499,13 @@ export const ArtisanProfilePage: React.FC<ArtisanProfilePageProps> = ({
 
         {/* Product Grid */}
         {artisanProducts.length === 0 ? (
-          <div className="bg-white rounded-3xl p-12 border border-dashed border-stone-300 text-center space-y-3">
+          <div id="no-previous-work-state" className="bg-white rounded-3xl p-12 border border-dashed border-stone-300 text-center space-y-3">
             <Package className="w-10 h-10 text-stone-400 mx-auto" />
             <h3 className="text-base font-bold text-slate-800 font-serif">
-              This artisan has not listed any products yet.
+              No previous work yet.
             </h3>
             <p className="text-xs text-stone-500 max-w-md mx-auto">
-              Check back soon as new handcrafted pieces are published to KalaConnect.
+              Your completed and showcased work will appear here.
             </p>
             <button
               onClick={() => setCurrentTab('b2b-marketplace')}
@@ -532,7 +532,7 @@ export const ArtisanProfilePage: React.FC<ArtisanProfilePageProps> = ({
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
             {filteredProducts.map((prod) => {
-              const imageToShow = prod.enhancedImage || prod.originalImage;
+              const imageToShow = prod.enhancedImage || prod.originalImage || prod.image || prod.selectedImageUrl || 'https://images.unsplash.com/photo-1578749556568-bc2c40e68b61?auto=format&fit=crop&w=800&q=80';
               const hasWholesale = Boolean(prod.wholesalePrice || prod.b2bWholesalePrice);
               const wholesalePrice = prod.wholesalePrice || prod.b2bWholesalePrice || prod.actualPrice;
               const moq = prod.wholesaleMOQ || prod.b2bMOQ || prod.moq || 5;

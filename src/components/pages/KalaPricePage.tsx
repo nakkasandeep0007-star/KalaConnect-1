@@ -51,6 +51,7 @@ export const KalaPricePage: React.FC<KalaPricePageProps> = ({
   initialProductId,
 }) => {
   const { draft, updateDraft } = useProductDraft();
+  const { user, role, artisan } = useAuth();
   
   // Local language toggle for KalaPrice (English / Hindi)
   const [activeLang, setActiveLang] = useState<'en' | 'hi'>(initialLang === 'hi' ? 'hi' : 'en');
@@ -321,7 +322,8 @@ export const KalaPricePage: React.FC<KalaPricePageProps> = ({
         };
 
         try {
-          await saveProductToDb(target.userId || user?.uid || 'guest-artisan', updatedProduct);
+          const effectiveUserId = user?.uid || target.userId || 'guest-artisan';
+          await saveProductToDb(effectiveUserId, updatedProduct);
           setProducts((prev) =>
             prev.map((p) => (p.id === updatedProduct.id ? updatedProduct : p))
           );
@@ -354,21 +356,18 @@ export const KalaPricePage: React.FC<KalaPricePageProps> = ({
     speakText(speech, activeLang);
   };
 
-  const { user, role, artisan } = useAuth();
   const isBuyer = role === 'buyer';
 
   // Find the selected product if not in draft mode
   const selectedProduct = selectedProductId !== 'draft' ? products.find((p) => p.id === selectedProductId) : null;
 
-  // Determine if user owns the selected item
+  // Determine if user owns the selected item (Strict ID-based check only)
   const isOwner = Boolean(
     role === 'artisan' &&
     (
       selectedProductId === 'draft' ||
       (user?.uid && (selectedProduct?.userId === user.uid || selectedProduct?.artisanId === user.uid)) ||
-      (artisan?.id && (selectedProduct?.userId === artisan.id || selectedProduct?.artisanId === artisan.id)) ||
-      (artisan?.name && selectedProduct?.artisanName && selectedProduct.artisanName === artisan.name) ||
-      (!selectedProduct?.userId && !selectedProduct?.artisanId) // Default/guest sample product in current session
+      (artisan?.id && (selectedProduct?.userId === artisan.id || selectedProduct?.artisanId === artisan.id))
     )
   );
 

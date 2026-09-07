@@ -33,7 +33,14 @@ export const BUYER_NOTIFICATION_TYPES = [
 ] as const;
 
 /**
- * Get all notifications cached in localStorage
+ * User-scoped localStorage key generator to isolate private notification data
+ */
+function getUserScopedKey(userId: string): string {
+  return `${LOCAL_NOTIFS_KEY}_${userId}`;
+}
+
+/**
+ * Get all notifications cached in global localStorage (legacy fallback)
  */
 function getLocalNotifications(): AppNotification[] {
   try {
@@ -48,6 +55,54 @@ function getLocalNotifications(): AppNotification[] {
 }
 
 /**
+ * Get notifications cached for a specific authenticated user.
+ * Reads user-scoped storage and legacy storage filtered strictly by recipientUserId === userId.
+ */
+function getUserLocalNotifications(userId: string): AppNotification[] {
+  if (!userId) return [];
+  const results: AppNotification[] = [];
+  const seenIds = new Set<string>();
+
+  // 1. Read from user-scoped storage
+  try {
+    const rawScoped = localStorage.getItem(getUserScopedKey(userId));
+    if (rawScoped) {
+      const parsed = JSON.parse(rawScoped);
+      if (Array.isArray(parsed)) {
+        parsed.forEach((n: AppNotification) => {
+          if (n && n.recipientUserId === userId && !seenIds.has(n.notificationId)) {
+            seenIds.add(n.notificationId);
+            results.push(n);
+          }
+        });
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to read user-scoped notification storage:', err);
+  }
+
+  // 2. Read from legacy global cache strictly filtered by recipientUserId === userId
+  try {
+    const rawGlobal = localStorage.getItem(LOCAL_NOTIFS_KEY);
+    if (rawGlobal) {
+      const parsed = JSON.parse(rawGlobal);
+      if (Array.isArray(parsed)) {
+        parsed.forEach((n: AppNotification) => {
+          if (n && n.recipientUserId === userId && !seenIds.has(n.notificationId)) {
+            seenIds.add(n.notificationId);
+            results.push(n);
+          }
+        });
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to read global notification cache:', err);
+  }
+
+  return results;
+}
+
+/**
  * Save notifications list to localStorage
  */
 function saveLocalNotifications(list: AppNotification[]): void {
@@ -59,26 +114,49 @@ function saveLocalNotifications(list: AppNotification[]): void {
 }
 
 /**
- * Persist a notification to both Firestore and localStorage.
+ * Save notification list to user-scoped storage
+ */
+function saveUserScopedNotifications(userId: string, list: AppNotification[]): void {
+  if (!userId) return;
+  try {
+    localStorage.setItem(getUserScopedKey(userId), JSON.stringify(list));
+  } catch (err) {
+    console.warn('Failed to write user-scoped notification cache:', err);
+  }
+}
+
+/**
+ * Persist a notification to both Firestore and user-scoped localStorage.
  * Deduplicates by notificationId.
  */
 export async function saveNotification(
   notification: AppNotification
 ): Promise<AppNotification> {
-  // Check local cache first for instant deduplication
-  const cached = getLocalNotifications();
-  const existingIndex = cached.findIndex((n) => n.notificationId === notification.notificationId);
-
-  if (existingIndex >= 0) {
-    // Already exists — return without duplicating
-    return cached[existingIndex];
+  if (!notification || !notification.notificationId || !notification.recipientUserId) {
+    return notification;
   }
 
-  // Update local cache
-  const updatedCache = [notification, ...cached];
-  saveLocalNotifications(updatedCache);
+  // 1. Update user-scoped cache
+  const userNotifs = getUserLocalNotifications(notification.recipientUserId);
+  const existingUserIdx = userNotifs.findIndex((n) => n.notificationId === notification.notificationId);
+  if (existingUserIdx >= 0) {
+    userNotifs[existingUserIdx] = notification;
+  } else {
+    userNotifs.unshift(notification);
+  }
+  saveUserScopedNotifications(notification.recipientUserId, userNotifs);
 
-  // Persist to Firestore
+  // 2. Update legacy global cache for backward compatibility
+  const cached = getLocalNotifications();
+  const existingIndex = cached.findIndex((n) => n.notificationId === notification.notificationId);
+  if (existingIndex >= 0) {
+    cached[existingIndex] = notification;
+    saveLocalNotifications(cached);
+  } else {
+    saveLocalNotifications([notification, ...cached]);
+  }
+
+  // 3. Persist to Firestore
   try {
     const docRef = doc(db, NOTIFICATIONS_COLLECTION, notification.notificationId);
     await setDoc(
@@ -141,6 +219,7 @@ export async function createNotificationSafe(params: {
 
 /**
  * Retrieve notifications for a specific authenticated user.
+ * Strictly isolates data to the authenticated user ID.
  * Enforces role security:
  * - Buyers only see buyer notifications.
  * - Artisans only see artisan notifications.
@@ -154,20 +233,18 @@ export async function getUserNotifications(
 
   const notifMap = new Map<string, AppNotification>();
 
-  // Determine all acceptable recipient IDs for this user
+  // Strict ownership: The authenticated user's ID is the absolute source of truth.
+  // Never add unauthenticated demo fallback IDs to another user's session.
   const userIdsToQuery = [userId];
-  if (alternateUserId && alternateUserId !== userId) {
+  if (
+    alternateUserId &&
+    alternateUserId !== userId &&
+    !['sample-artist', 'sample-buyer-1', 'sample-buyer-2'].includes(alternateUserId)
+  ) {
     userIdsToQuery.push(alternateUserId);
   }
-  // Include demo fallback IDs based on role
-  if (role === 'artisan' && !userIdsToQuery.includes('sample-artist')) {
-    userIdsToQuery.push('sample-artist');
-  } else if (role === 'buyer') {
-    if (!userIdsToQuery.includes('sample-buyer-1')) userIdsToQuery.push('sample-buyer-1');
-    if (!userIdsToQuery.includes('sample-buyer-2')) userIdsToQuery.push('sample-buyer-2');
-  }
 
-  // 1. Read from Firestore
+  // 1. Read from Firestore with strict recipientUserId filtering
   try {
     for (const id of userIdsToQuery) {
       const q = query(
@@ -177,7 +254,7 @@ export async function getUserNotifications(
       const snapshot = await getDocs(q);
       snapshot.forEach((d) => {
         const data = d.data() as AppNotification;
-        if (data.notificationId) {
+        if (data.notificationId && userIdsToQuery.includes(data.recipientUserId)) {
           notifMap.set(data.notificationId, data);
         }
       });
@@ -186,23 +263,23 @@ export async function getUserNotifications(
     console.warn('Firestore notifications fetch notice (using cache):', err);
   }
 
-  // 2. Merge with local cache
-  const cached = getLocalNotifications();
-  cached.forEach((n) => {
-    const matchesUser = userIdsToQuery.includes(n.recipientUserId);
-
-    if (matchesUser) {
-      if (!notifMap.has(n.notificationId)) {
-        notifMap.set(n.notificationId, n);
-      } else {
-        // If local has read=true, respect the latest read status
-        const remote = notifMap.get(n.notificationId)!;
-        if (n.read && !remote.read) {
-          notifMap.set(n.notificationId, { ...remote, read: true });
+  // 2. Merge with local user-scoped cache (strictly filtered by recipientUserId)
+  for (const id of userIdsToQuery) {
+    const cachedForUser = getUserLocalNotifications(id);
+    cachedForUser.forEach((n) => {
+      if (userIdsToQuery.includes(n.recipientUserId)) {
+        if (!notifMap.has(n.notificationId)) {
+          notifMap.set(n.notificationId, n);
+        } else {
+          // If local has read=true, respect the latest read status
+          const remote = notifMap.get(n.notificationId)!;
+          if (n.read && !remote.read) {
+            notifMap.set(n.notificationId, { ...remote, read: true });
+          }
         }
       }
-    }
-  });
+    });
+  }
 
   // Convert to array
   let list = Array.from(notifMap.values());
@@ -216,59 +293,123 @@ export async function getUserNotifications(
     list = list.filter((n) => !BUYER_NOTIFICATION_TYPES.includes(n.type as any));
   }
 
-  // 4. Sort descending by createdAt
+  // 4. Absolute User Data Isolation Verification
+  list = list.filter((n) => userIdsToQuery.includes(n.recipientUserId));
+
+  // 5. Sort descending by createdAt
   return list.sort(
     (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
   );
 }
 
 /**
- * Mark a single notification as read
+ * Mark a single notification as read.
+ * Enforces ownership: only the recipient user can mark their notification as read.
  */
 export async function markNotificationAsRead(
   notificationId: string,
   userId: string
 ): Promise<void> {
-  // Update local cache
-  const cached = getLocalNotifications();
-  const updatedCache = cached.map((n) =>
-    n.notificationId === notificationId && n.recipientUserId === userId
-      ? { ...n, read: true }
-      : n
-  );
-  saveLocalNotifications(updatedCache);
+  if (!notificationId || !userId) return;
 
-  // Update Firestore
+  // 1. Update user-scoped local cache
+  try {
+    const userKey = getUserScopedKey(userId);
+    const raw = localStorage.getItem(userKey);
+    if (raw) {
+      const parsed: AppNotification[] = JSON.parse(raw);
+      const updated = parsed.map((n) =>
+        n.notificationId === notificationId && n.recipientUserId === userId
+          ? { ...n, read: true }
+          : n
+      );
+      localStorage.setItem(userKey, JSON.stringify(updated));
+    }
+  } catch (err) {
+    console.warn('Failed to mark read in user scoped storage:', err);
+  }
+
+  // 2. Update legacy global cache (strictly if recipient matches authenticated user)
+  try {
+    const cached = getLocalNotifications();
+    const updatedCache = cached.map((n) =>
+      n.notificationId === notificationId && n.recipientUserId === userId
+        ? { ...n, read: true }
+        : n
+    );
+    saveLocalNotifications(updatedCache);
+  } catch (err) {
+    console.warn('Failed to mark read in global cache:', err);
+  }
+
+  // 3. Update Firestore (strictly validating ownership)
   try {
     const docRef = doc(db, NOTIFICATIONS_COLLECTION, notificationId);
-    await updateDoc(docRef, {
-      read: true,
-      dbUpdatedAt: serverTimestamp(),
-    });
+    // Query to verify that document recipientUserId matches authenticated user
+    const q = query(
+      collection(db, NOTIFICATIONS_COLLECTION),
+      where('notificationId', '==', notificationId),
+      where('recipientUserId', '==', userId)
+    );
+    const docSnap = await getDocs(q);
+    if (!docSnap.empty) {
+      await updateDoc(docRef, {
+        read: true,
+        dbUpdatedAt: serverTimestamp(),
+      });
+    }
   } catch (err) {
     console.warn('Firestore mark notification read notice:', err);
   }
 }
 
 /**
- * Mark all notifications for the authenticated user as read
+ * Mark all notifications for the authenticated user as read.
+ * Enforces ownership: affects ONLY the authenticated user's notifications.
  */
 export async function markAllNotificationsAsRead(
   userId: string,
   alternateUserId?: string
 ): Promise<void> {
-  const cached = getLocalNotifications();
+  if (!userId) return;
   const userIds = [userId];
-  if (alternateUserId && alternateUserId !== userId) {
+  if (
+    alternateUserId &&
+    alternateUserId !== userId &&
+    !['sample-artist', 'sample-buyer-1', 'sample-buyer-2'].includes(alternateUserId)
+  ) {
     userIds.push(alternateUserId);
   }
 
-  const updatedCache = cached.map((n) =>
-    userIds.includes(n.recipientUserId) ? { ...n, read: true } : n
-  );
-  saveLocalNotifications(updatedCache);
+  // 1. Update user-scoped caches
+  userIds.forEach((id) => {
+    try {
+      const userKey = getUserScopedKey(id);
+      const raw = localStorage.getItem(userKey);
+      if (raw) {
+        const parsed: AppNotification[] = JSON.parse(raw);
+        const updated = parsed.map((n) =>
+          userIds.includes(n.recipientUserId) ? { ...n, read: true } : n
+        );
+        localStorage.setItem(userKey, JSON.stringify(updated));
+      }
+    } catch (err) {
+      console.warn('Failed to mark all read in user cache:', err);
+    }
+  });
 
-  // Update Firestore in background
+  // 2. Update legacy global cache strictly for matching userIds
+  try {
+    const cached = getLocalNotifications();
+    const updatedCache = cached.map((n) =>
+      userIds.includes(n.recipientUserId) ? { ...n, read: true } : n
+    );
+    saveLocalNotifications(updatedCache);
+  } catch (err) {
+    console.warn('Failed to mark all read in global cache:', err);
+  }
+
+  // 3. Update Firestore in background
   try {
     for (const uid of userIds) {
       const q = query(

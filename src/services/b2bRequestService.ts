@@ -225,9 +225,15 @@ export async function getB2BRequests(userId?: string): Promise<B2BQuoteRequest[]
   }
 
   const list = Array.from(map.values());
-  return list.sort(
+  const sorted = list.sort(
     (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
   );
+
+  if (userId) {
+    return sorted.filter((r) => r.artisanId === userId || r.buyerId === userId);
+  }
+
+  return sorted;
 }
 
 export async function updateB2BRequestStatusInDb(

@@ -300,13 +300,11 @@ export const BusinessInsightsSection: React.FC<BusinessInsightsSectionProps> = (
 
   // Metric 8: Recent Business Activity (Using real existing notifications/events, max 5)
   const recentActivities = useMemo(() => {
-    // Collect from notifications where recipient matches artisan
+    // Collect from notifications where recipient matches the authenticated artisan
     const artisanNotifs = notifications
       .filter(
         (n) =>
-          n.recipientUserId === currentArtisanId ||
-          n.recipientUserId === artisan.id ||
-          n.recipientUserId === user?.uid
+          Boolean(user?.uid && n.recipientUserId === user.uid)
       )
       .slice(0, 5);
 

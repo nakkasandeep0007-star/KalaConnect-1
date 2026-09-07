@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   ArtisanProfile,
   Conversation,
@@ -54,7 +54,7 @@ import { B2BListingModal } from './components/modals/B2BListingModal';
 import { RequestQuoteModal } from './components/modals/RequestQuoteModal';
 import { SendOfferModal } from './components/modals/SendOfferModal';
 import { useAuth } from './context/AuthContext';
-import { getUserProducts, saveProductToDb } from './services/productService';
+import { getAllProducts, getUserProducts, saveProductToDb } from './services/productService';
 import { getUserPreviousWorks } from './services/previousWorkService';
 import { getArtistRequests } from './services/customerRequestService';
 import { getArtistOrders, getUserOrders, saveOrderToDb } from './services/orderService';
@@ -118,8 +118,8 @@ export const App: React.FC = () => {
       setOrders([]);
       setConversations([]);
       setB2bRequests([]);
-      // Load canonical products for public exploration and marketplace preview
-      getUserProducts().then((allProds) => {
+      // Load canonical marketplace products for public exploration and marketplace preview
+      getAllProducts().then((allProds) => {
         if (isMounted) {
           setProducts(allProds.length > 0 ? allProds : INITIAL_PRODUCTS);
         }
@@ -133,8 +133,8 @@ export const App: React.FC = () => {
       const userId = user.uid;
 
       try {
-        const [dbProducts, dbWorks, dbRequests, dbOrders, dbConvs, dbB2BReqs] = await Promise.all([
-          getUserProducts(userId),
+        const [allMarketplaceProducts, dbWorks, dbRequests, dbOrders, dbConvs, dbB2BReqs] = await Promise.all([
+          getAllProducts(),
           getUserPreviousWorks(userId),
           getArtistRequests(userId),
           getUserOrders(userId, effectiveRole, user.email || undefined),
@@ -143,21 +143,22 @@ export const App: React.FC = () => {
         ]);
 
         if (isMounted) {
-          setProducts(dbProducts.length > 0 ? dbProducts : INITIAL_PRODUCTS);
-          setPreviousWorks(dbWorks.length > 0 ? dbWorks : SAMPLE_PREVIOUS_WORKS);
-          setRequests(dbRequests.length > 0 ? dbRequests : SAMPLE_CUSTOMER_REQUESTS);
-          setOrders(dbOrders.length > 0 ? dbOrders : SAMPLE_ORDERS);
-          setConversations(dbConvs.length > 0 ? dbConvs : SAMPLE_CONVERSATIONS);
+          setProducts(allMarketplaceProducts.length > 0 ? allMarketplaceProducts : INITIAL_PRODUCTS);
+          const isSampleUser = userId === 'sample-artist';
+          setPreviousWorks(dbWorks.length > 0 ? dbWorks : (isSampleUser ? SAMPLE_PREVIOUS_WORKS : []));
+          setRequests(dbRequests.length > 0 ? dbRequests : (isSampleUser ? SAMPLE_CUSTOMER_REQUESTS : []));
+          setOrders(dbOrders.length > 0 ? dbOrders : (isSampleUser ? SAMPLE_ORDERS : []));
+          setConversations(dbConvs.length > 0 ? dbConvs : (isSampleUser ? SAMPLE_CONVERSATIONS : []));
           setB2bRequests(dbB2BReqs);
         }
       } catch (err) {
         console.error('Error loading domain data:', err);
         if (isMounted) {
           setProducts(INITIAL_PRODUCTS);
-          setPreviousWorks(SAMPLE_PREVIOUS_WORKS);
-          setRequests(SAMPLE_CUSTOMER_REQUESTS);
-          setOrders(SAMPLE_ORDERS);
-          setConversations(SAMPLE_CONVERSATIONS);
+          setPreviousWorks(userId === 'sample-artist' ? SAMPLE_PREVIOUS_WORKS : []);
+          setRequests(userId === 'sample-artist' ? SAMPLE_CUSTOMER_REQUESTS : []);
+          setOrders(userId === 'sample-artist' ? SAMPLE_ORDERS : []);
+          setConversations(userId === 'sample-artist' ? SAMPLE_CONVERSATIONS : []);
         }
       } finally {
         if (isMounted) setLoadingData(false);
@@ -169,6 +170,28 @@ export const App: React.FC = () => {
       isMounted = false;
     };
   }, [user]);
+
+  // Strict isolated products owned by the authenticated artisan for private management screens
+  const artisanProducts = useMemo(() => {
+    if (!user?.uid || effectiveRole !== 'artisan') return [];
+    const currentUid = user.uid;
+    const currentArtisanId = effectiveArtisan?.id;
+    return products.filter(
+      (p) =>
+        (p.artisanId && (p.artisanId === currentUid || p.artisanId === currentArtisanId)) ||
+        (p.userId && (p.userId === currentUid || p.userId === currentArtisanId))
+    );
+  }, [products, user?.uid, effectiveArtisan?.id, effectiveRole]);
+
+  // Strict isolated orders belonging to the authenticated artisan
+  const artisanOrders = useMemo(() => {
+    if (!user?.uid || effectiveRole !== 'artisan') return [];
+    const currentUid = user.uid;
+    const currentArtisanId = effectiveArtisan?.id;
+    return orders.filter(
+      (o) => o.artistId === currentUid || (currentArtisanId && o.artistId === currentArtisanId)
+    );
+  }, [orders, user?.uid, effectiveArtisan?.id, effectiveRole]);
 
   // Handle new product creation from wizard
   const handleProductCreated = (newProduct: Product) => {
@@ -671,10 +694,10 @@ export const App: React.FC = () => {
                 ) : effectiveArtisan ? (
                   <Dashboard
                     artisan={effectiveArtisan}
-                    products={products}
+                    products={artisanProducts}
                     previousWorks={previousWorks}
                     requests={requests}
-                    orders={orders}
+                    orders={artisanOrders}
                     conversations={conversations}
                     b2bRequests={b2bRequests}
                     setCurrentTab={setCurrentTab}
@@ -702,6 +725,8 @@ export const App: React.FC = () => {
               {/* Previous Work */}
               {currentTab === 'previous-work' && (
                 <PreviousWorkPage
+                  products={artisanProducts}
+                  allProducts={products}
                   previousWorks={previousWorks}
                   setPreviousWorks={setPreviousWorks}
                   currentLang={currentLang}
@@ -712,7 +737,7 @@ export const App: React.FC = () => {
               {/* My Catalog */}
               {(currentTab === 'catalog' || currentTab === 'products') && (
                 <MyCatalogPage
-                  products={products}
+                  products={artisanProducts}
                   setProducts={setProducts}
                   setSelectedProduct={setSelectedProduct}
                   setCurrentTab={setCurrentTab}
@@ -758,7 +783,7 @@ export const App: React.FC = () => {
               {/* Public & Authenticated Artisan Profile Page */}
               {currentTab === 'artisan-profile' && (
                 <ArtisanProfilePage
-                  artisanId={selectedArtisanId || effectiveArtisan?.id || effectiveArtisan?.name || 'sample-artist'}
+                  artisanId={selectedArtisanId || effectiveArtisan?.id || user?.uid || 'sample-artist'}
                   products={products.length > 0 ? products : INITIAL_PRODUCTS}
                   currentArtisan={effectiveArtisan}
                   currentRole={effectiveRole}
@@ -813,7 +838,7 @@ export const App: React.FC = () => {
                 <KalaPricePage
                   setCurrentTab={setCurrentTab}
                   currentLang={currentLang}
-                  products={products}
+                  products={artisanProducts}
                   setProducts={setProducts}
                   initialProductId={priceEditingProductId}
                 />
@@ -886,8 +911,8 @@ export const App: React.FC = () => {
               {/* Earnings & UPI Disbursements */}
               {currentTab === 'earnings' && (
                 <EarningsPage
-                  orders={orders}
-                  products={products}
+                  orders={artisanOrders}
+                  products={artisanProducts}
                   currentLang={currentLang}
                   setCurrentTab={setCurrentTab}
                 />

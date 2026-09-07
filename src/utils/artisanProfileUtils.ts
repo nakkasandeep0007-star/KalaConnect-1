@@ -85,7 +85,7 @@ export function resolveArtisanData(
   const artisanProducts = allProducts.filter((p) => {
     if (!p) return false;
 
-    // Match by ID
+    // Match by ID (primary authoritative source of truth)
     const matchesId =
       resolvedId &&
       ((p.artisanId && p.artisanId.toLowerCase() === resolvedId.toLowerCase()) ||
@@ -93,15 +93,20 @@ export function resolveArtisanData(
         (cleanId && p.artisanId && p.artisanId.toLowerCase() === cleanIdLower) ||
         (cleanId && p.userId && p.userId.toLowerCase() === cleanIdLower));
 
-    // Match by Name
-    const targetName = matchedProfile?.name || cleanId;
-    const matchesName =
-      Boolean(targetName) &&
-      Boolean(p.artisanName) &&
-      (p.artisanName?.toLowerCase().trim() === targetName.toLowerCase().trim() ||
-        p.artisanName?.toLowerCase().trim() === cleanIdLower);
+    if (matchesId) return true;
 
-    return matchesId || matchesName;
+    // Only fallback to name if the product has NO explicit owner ID attached
+    if (!p.artisanId && !p.userId) {
+      const targetName = matchedProfile?.name || cleanId;
+      const matchesName =
+        Boolean(targetName) &&
+        Boolean(p.artisanName) &&
+        (p.artisanName?.toLowerCase().trim() === targetName.toLowerCase().trim() ||
+          p.artisanName?.toLowerCase().trim() === cleanIdLower);
+      return Boolean(matchesName);
+    }
+
+    return false;
   });
 
   // 5. If profile not yet found in registries, construct transparent profile from real product data
@@ -241,16 +246,6 @@ export function isProductOwner(
 
   // 2. Direct ID match with artisan profile ID
   if (artisanId && (prodUserId === artisanId || prodArtisanId === artisanId)) {
-    return true;
-  }
-
-  // 3. Name match between artisan profile and product author
-  if (artisanName && prodArtisanName && artisanName === prodArtisanName) {
-    return true;
-  }
-
-  // 4. Fallback for unassigned products in artisan workspace
-  if (!prodUserId && !prodArtisanId) {
     return true;
   }
 

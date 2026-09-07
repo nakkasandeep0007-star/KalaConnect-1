@@ -112,9 +112,17 @@ export async function getAllProducts(): Promise<Product[]> {
   return list;
 }
 
-// 2. Fetch User Products (returns canonical products so all parts of the app stay in sync)
+// 2. Fetch User Products (strictly filters by the authenticated artisan's ID)
 export async function getUserProducts(userId?: string): Promise<Product[]> {
-  return getAllProducts();
+  if (!userId) {
+    return [];
+  }
+  const all = await getAllProducts();
+  return all.filter(
+    (p) =>
+      (p.artisanId && p.artisanId === userId) ||
+      (p.userId && p.userId === userId)
+  );
 }
 
 // 3. Fetch B2B Marketplace Products (status === 'published' && (publishedToB2B === true || isB2BListed === true))
@@ -134,7 +142,21 @@ export async function saveProductToDb(
 ): Promise<Product> {
   const prodId = productData.id || `prod_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
   const now = new Date().toISOString();
-  const effectiveArtisanId = productData.artisanId || productData.userId || userId || 'sample-artist';
+
+  // Strict ownership verification before updating an existing product
+  if (productData.id) {
+    const localProds = getCanonicalLocalProducts();
+    const existing = localProds.find((p) => p.id === productData.id);
+    if (existing) {
+      const existingOwner = existing.artisanId || existing.userId;
+      if (existingOwner && existingOwner !== userId) {
+        throw new Error("Permission denied: You cannot edit another artisan's product.");
+      }
+    }
+  }
+
+  // The saving user's ID is the absolute authoritative owner ID
+  const effectiveArtisanId = userId || productData.artisanId || productData.userId || 'sample-artist';
 
   // Compress images to ensure payload is comfortably under Firestore 1MB document limit
   let originalImage = productData.originalImage || productData.image || '';
@@ -216,7 +238,21 @@ export async function saveProductToDb(
 
 // 5. Delete product from canonical data source
 export async function deleteProductFromDb(productId: string, userId?: string): Promise<void> {
-  const effectiveUserId = userId || 'sample-artist';
+  if (!userId) {
+    throw new Error('Permission denied: Authentication required to delete product.');
+  }
+
+  // Strict ownership verification before deleting
+  const existingProducts = getCanonicalLocalProducts();
+  const existing = existingProducts.find((p) => p.id === productId);
+  if (existing) {
+    const existingOwner = existing.artisanId || existing.userId;
+    if (existingOwner && existingOwner !== userId) {
+      throw new Error("Permission denied: You cannot delete another artisan's product.");
+    }
+  }
+
+  const effectiveUserId = userId;
 
   // 1. Delete from Firestore
   try {

@@ -37,6 +37,7 @@ import {
 import { TRANSLATIONS } from '../../utils/translations';
 import { speakText } from '../../utils/audioSpeech';
 import { BusinessInsightsSection } from '../analytics/BusinessInsightsSection';
+import { useAuth } from '../../context/AuthContext';
 
 interface DashboardProps {
   artisan: ArtisanProfile;
@@ -64,13 +65,38 @@ export const Dashboard: React.FC<DashboardProps> = ({
   currentLang,
 }) => {
   const t = TRANSLATIONS[currentLang] || TRANSLATIONS.en;
+  const { user } = useAuth();
+  const currentUserId = user?.uid || artisan.id;
+
+  // Strict isolation: only products owned by this authenticated artisan
+  const artisanProducts = React.useMemo(() => {
+    if (!currentUserId) return [];
+    return products.filter(
+      (p) => (p.artisanId && p.artisanId === currentUserId) || (p.userId && p.userId === currentUserId)
+    );
+  }, [products, currentUserId]);
+
+  const artisanB2BRequests = React.useMemo(() => {
+    if (!currentUserId) return [];
+    return b2bRequests.filter((r) => r.artisanId === currentUserId);
+  }, [b2bRequests, currentUserId]);
+
+  const artisanOrders = React.useMemo(() => {
+    if (!currentUserId) return [];
+    return orders.filter((o) => o.artistId === currentUserId);
+  }, [orders, currentUserId]);
+
+  const artisanRequests = React.useMemo(() => {
+    if (!currentUserId) return [];
+    return requests.filter((r) => r.artistId === currentUserId);
+  }, [requests, currentUserId]);
 
   // 1. Business Overview Data Calculations (Strictly Real Data)
-  const totalProductsCount = products.length;
-  const activeListingsCount = products.filter((p) => p.status === 'published').length;
+  const totalProductsCount = artisanProducts.length;
+  const activeListingsCount = artisanProducts.filter((p) => p.status === 'published').length;
   
   // Pending B2B Quote Requests
-  const pendingB2BRequests = b2bRequests.filter(
+  const pendingB2BRequests = artisanB2BRequests.filter(
     (r) =>
       r.status === 'New' ||
       r.status === 'Viewed' ||
@@ -82,7 +108,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
   // Inventory & Total Value Calculation (Real Data: price * stock/inventory)
   let calculatedInventoryValue = 0;
   let totalStockUnits = 0;
-  products.forEach((p) => {
+  artisanProducts.forEach((p) => {
     const price = p.actualPrice || p.price || p.suggestedPrice || 0;
     const stock = p.inventory ?? p.stock ?? 0;
     calculatedInventoryValue += price * stock;
@@ -90,12 +116,12 @@ export const Dashboard: React.FC<DashboardProps> = ({
   });
 
   // 2. Actionable "Needs Your Attention" Items
-  const lowStockProducts = products.filter((p) => {
+  const lowStockProducts = artisanProducts.filter((p) => {
     const stock = p.inventory ?? p.stock ?? 0;
     return stock <= 5;
   });
 
-  const incompleteProducts = products.filter(
+  const incompleteProducts = artisanProducts.filter(
     (p) =>
       p.status === 'draft' ||
       !p.description?.trim() ||
@@ -103,7 +129,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
       p.materials.length === 0
   );
 
-  const pendingCustomerRequests = requests.filter((r) => r.status === 'pending');
+  const pendingCustomerRequests = artisanRequests.filter((r) => r.status === 'pending');
 
   const playDashboardSpeech = () => {
     const text =
@@ -402,9 +428,9 @@ export const Dashboard: React.FC<DashboardProps> = ({
       {/* 4. BUSINESS INSIGHTS (ARTISAN ANALYTICS DASHBOARD) */}
       <BusinessInsightsSection
         artisan={artisan}
-        products={products}
-        b2bRequests={b2bRequests}
-        orders={orders}
+        products={artisanProducts}
+        b2bRequests={artisanB2BRequests}
+        orders={artisanOrders}
         setCurrentTab={setCurrentTab}
         currentLang={currentLang}
       />

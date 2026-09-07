@@ -28,18 +28,29 @@ export const ActivityCenterPage: React.FC<ActivityCenterPageProps> = ({
   onSelectOrder,
   onSelectQuoteRequest,
 }) => {
-  const { role } = useAuth();
+  const { user, role } = useAuth();
   const { notifications, unreadCount, markAsRead, markAllAsRead, formatTimeAgo } =
     useNotifications();
 
   const [filter, setFilter] = useState<'all' | 'unread'>('all');
 
-  const filteredNotifications = notifications.filter((n) => {
+  // Strict User Data Isolation: Only show activities where recipientUserId === user.uid
+  const userNotifications = notifications.filter(
+    (n) => Boolean(user?.uid && n.recipientUserId === user.uid)
+  );
+
+  const filteredNotifications = userNotifications.filter((n) => {
     if (filter === 'unread') return !n.read;
     return true;
   });
 
   const handleNotificationClick = async (notif: AppNotification) => {
+    // Strict ownership verification: activity must belong to the authenticated user
+    if (!user?.uid || notif.recipientUserId !== user.uid) {
+      console.warn('Unauthorized activity interaction blocked');
+      return;
+    }
+
     if (!notif.read) {
       await markAsRead(notif.notificationId);
     }

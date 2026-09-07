@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   PlusCircle,
   ShoppingBag,
@@ -66,7 +66,16 @@ export const MyCatalogPage: React.FC<MyCatalogPageProps> = ({
     return () => clearTimeout(timer);
   }, [toast]);
 
-  const filteredProducts = products.filter((p) => {
+  // Strict isolated products owned by the authenticated artisan
+  const currentUserId = user?.uid;
+  const ownedProducts = useMemo(() => {
+    if (!currentUserId) return [];
+    return products.filter(
+      (p) => (p.artisanId && p.artisanId === currentUserId) || (p.userId && p.userId === currentUserId)
+    );
+  }, [products, currentUserId]);
+
+  const filteredProducts = ownedProducts.filter((p) => {
     const matchesSearch =
       p.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
       p.category.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -83,6 +92,14 @@ export const MyCatalogPage: React.FC<MyCatalogPageProps> = ({
   });
 
   const handleToggleStatus = async (product: Product) => {
+    if (product.artisanId !== currentUserId && product.userId !== currentUserId) {
+      setToast({
+        type: 'error',
+        message: "Permission denied: You cannot edit another artisan's product.",
+      });
+      return;
+    }
+
     const nextStatus: ProductStatus = product.status === 'published' ? 'draft' : 'published';
     const updated: Product = { ...product, status: nextStatus };
 
@@ -97,6 +114,19 @@ export const MyCatalogPage: React.FC<MyCatalogPageProps> = ({
 
   const handleConfirmDelete = async () => {
     if (!productPendingDeletion) return;
+
+    if (
+      productPendingDeletion.artisanId !== currentUserId &&
+      productPendingDeletion.userId !== currentUserId
+    ) {
+      setProductPendingDeletion(null);
+      setToast({
+        type: 'error',
+        message: "Permission denied: You cannot delete another artisan's product.",
+      });
+      return;
+    }
+
     const prodIdToDelete = productPendingDeletion.id;
     const effectiveUserId = user?.uid || 'guest-artisan';
 
@@ -130,8 +160,8 @@ export const MyCatalogPage: React.FC<MyCatalogPageProps> = ({
     }
   };
 
-  const publishedCount = products.filter((p) => p.status === 'published').length;
-  const draftCount = products.filter((p) => p.status === 'draft' || p.status === 'ai_ready').length;
+  const publishedCount = ownedProducts.filter((p) => p.status === 'published').length;
+  const draftCount = ownedProducts.filter((p) => p.status === 'draft' || p.status === 'ai_ready').length;
 
   return (
     <div className="space-y-6 sm:space-y-8 animate-in fade-in duration-200 relative">

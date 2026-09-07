@@ -1,16 +1,12 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   BadgeIndianRupee,
-  TrendingUp,
-  ArrowUpRight,
   ShieldCheck,
-  CreditCard,
   Building,
   CheckCircle2,
   Clock,
   QrCode,
   Download,
-  Calendar,
 } from 'lucide-react';
 import { CustomOrder, LanguageCode, PageTab, Product } from '../../types';
 import { TRANSLATIONS } from '../../utils/translations';
@@ -29,35 +25,82 @@ export const EarningsPage: React.FC<EarningsPageProps> = ({
   currentLang,
   setCurrentTab,
 }) => {
-  const { artisan, updateProfileData } = useAuth();
+  const { user, artisan, updateProfileData } = useAuth();
   const t = TRANSLATIONS[currentLang] || TRANSLATIONS.en;
 
-  const [upiId, setUpiId] = useState(artisan?.upiId || 'rameshwar.craft@okhdfcbank');
+  const currentUserId = user?.uid?.trim() || '';
+  const currentArtisanId = artisan?.id?.trim() || '';
+
+  // Strict User Data Isolation: Only retrieve products owned by the currently authenticated artisan
+  const isolatedProducts = useMemo(() => {
+    if (!currentUserId && !currentArtisanId) return [];
+    return products.filter((p) => {
+      if (!p) return false;
+      const pArtisanId = p.artisanId?.trim();
+      const pUserId = p.userId?.trim();
+      if (currentUserId && (pArtisanId === currentUserId || pUserId === currentUserId)) {
+        return true;
+      }
+      if (currentArtisanId && (pArtisanId === currentArtisanId || pUserId === currentArtisanId)) {
+        return true;
+      }
+      return false;
+    });
+  }, [products, currentUserId, currentArtisanId]);
+
+  // Strict User Data Isolation: Only retrieve orders belonging to this authenticated artisan
+  const isolatedOrders = useMemo(() => {
+    if (!currentUserId && !currentArtisanId) return [];
+    return orders.filter((o) => {
+      if (!o) return false;
+      const oArtistId = o.artistId?.trim();
+      if (currentUserId && oArtistId === currentUserId) return true;
+      if (currentArtisanId && oArtistId === currentArtisanId) return true;
+      return false;
+    });
+  }, [orders, currentUserId, currentArtisanId]);
+
+  // Direct Payout Account state (strictly scoped to the current artisan)
+  const [upiId, setUpiId] = useState(artisan?.upiId || '');
   const [isEditingBank, setIsEditingBank] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
-  // Calculate order milestone earnings
+  // Sync UPI state when artisan profile changes or loads
+  useEffect(() => {
+    if (artisan?.upiId) {
+      setUpiId(artisan.upiId);
+    } else {
+      setUpiId('');
+    }
+  }, [artisan?.upiId]);
+
+  // 1. Calculate order milestone earnings for THIS artisan only
   let totalOrderEarnings = 0;
   let pendingMilestoneEarnings = 0;
 
-  orders.forEach((o) => {
-    o.paymentMilestones.forEach((m) => {
+  isolatedOrders.forEach((o) => {
+    o.paymentMilestones?.forEach((m) => {
       if (m.status === 'paid') {
-        totalOrderEarnings += m.amount;
+        totalOrderEarnings += Number(m.amount) || 0;
       } else {
-        pendingMilestoneEarnings += m.amount;
+        pendingMilestoneEarnings += Number(m.amount) || 0;
       }
     });
   });
 
-  const catalogSalesRevenue = products.reduce(
+  // 2. Calculate catalog sales revenue for THIS artisan only
+  const catalogSalesRevenue = isolatedProducts.reduce(
     (acc, p) => acc + (p.salesCount || 0) * (p.actualPrice || p.suggestedPrice || 0),
     0
   );
 
-  const totalGrossEarnings = totalOrderEarnings + catalogSalesRevenue + (artisan?.totalEarnings || 0);
+  const unitsSold = isolatedProducts.reduce((acc, p) => acc + (p.salesCount || 0), 0);
+
+  // 3. Total Gross Earnings for THIS artisan only (no global or demo numbers)
+  const totalGrossEarnings = totalOrderEarnings + catalogSalesRevenue;
 
   const handleSaveUpi = async () => {
+    if (!upiId.trim()) return;
     try {
       await updateProfileData({ upiId: upiId.trim() });
       setSaveSuccess(true);
@@ -68,11 +111,52 @@ export const EarningsPage: React.FC<EarningsPageProps> = ({
     }
   };
 
-  const payoutHistory = [
-    { id: 'tx-1', date: '2026-08-30', amount: 5400, desc: 'Commission Milestone: 4 Heritage Clay Planters', status: 'Credited' },
-    { id: 'tx-2', date: '2026-08-28', amount: 3600, desc: 'Advance Token: Order KC-2026-881', status: 'Credited' },
-    { id: 'tx-3', date: '2026-08-22', amount: 16500, desc: 'Direct Marketplace Sales Payout (10 Vase units)', status: 'Credited' },
-  ];
+  // Dynamically derive payout disbursements strictly from THIS artisan's orders & sales
+  const payoutHistory = useMemo(() => {
+    const list: Array<{
+      id: string;
+      date: string;
+      amount: number;
+      desc: string;
+      status: string;
+    }> = [];
+
+    // Milestone disbursements for authenticated artisan's orders
+    isolatedOrders.forEach((o) => {
+      o.paymentMilestones?.forEach((m) => {
+        if (m.status === 'paid') {
+          list.push({
+            id: `payout-${o.id}-${m.id}`,
+            date: m.paidAt
+              ? m.paidAt.split('T')[0]
+              : o.createdAt
+              ? o.createdAt.split('T')[0]
+              : 'Recent',
+            amount: m.amount || 0,
+            desc: `${m.title || 'Commission Milestone'} (${o.artworkTitle || o.orderNumber})`,
+            status: 'Credited',
+          });
+        }
+      });
+    });
+
+    // Catalog unit sales payouts for authenticated artisan's products
+    isolatedProducts.forEach((p) => {
+      const count = p.salesCount || 0;
+      if (count > 0) {
+        const unitPrice = p.actualPrice || p.suggestedPrice || 0;
+        list.push({
+          id: `payout-sale-${p.id}`,
+          date: p.createdAt ? p.createdAt.split('T')[0] : 'Recent',
+          amount: count * unitPrice,
+          desc: `Direct Marketplace Sales (${count} units of "${p.title}")`,
+          status: 'Credited',
+        });
+      }
+    });
+
+    return list.sort((a, b) => b.date.localeCompare(a.date));
+  }, [isolatedOrders, isolatedProducts]);
 
   return (
     <div className="space-y-6 sm:space-y-8 animate-in fade-in duration-200">
@@ -98,7 +182,13 @@ export const EarningsPage: React.FC<EarningsPageProps> = ({
         </div>
 
         <button
-          onClick={() => alert('Downloading official GST/Fair Trade Earnings Statement for the current fiscal period.')}
+          onClick={() => {
+            if (totalGrossEarnings === 0) {
+              alert('No earnings or transaction history recorded for your account yet.');
+            } else {
+              alert(`Downloading official GST/Fair Trade Earnings Statement for ₹${totalGrossEarnings.toLocaleString('en-IN')} (Fiscal Period 2026).`);
+            }
+          }}
           className="px-4 py-2.5 rounded-xl border border-stone-300 text-stone-700 hover:bg-stone-50 text-xs font-bold flex items-center gap-2 transition-colors self-start sm:self-auto shrink-0"
         >
           <Download className="w-4 h-4" />
@@ -135,7 +225,7 @@ export const EarningsPage: React.FC<EarningsPageProps> = ({
             ₹{catalogSalesRevenue.toLocaleString('en-IN')}
           </div>
           <p className="text-xs text-stone-500">
-            From {products.reduce((a, b) => a + (b.salesCount || 0), 0)} verified handicraft unit sales
+            From {unitsSold} verified handicraft unit sales
           </p>
         </div>
 
@@ -158,25 +248,39 @@ export const EarningsPage: React.FC<EarningsPageProps> = ({
             onClick={() => setIsEditingBank(!isEditingBank)}
             className="text-xs font-bold text-[#C25E3E] hover:underline"
           >
-            {isEditingBank ? 'Cancel' : 'Change UPI'}
+            {isEditingBank ? 'Cancel' : upiId ? 'Change UPI' : 'Add UPI'}
           </button>
         </div>
 
-        {isEditingBank ? (
-          <div className="flex items-center gap-3 max-w-md">
-            <input
-              type="text"
-              value={upiId}
-              onChange={(e) => setUpiId(e.target.value)}
-              placeholder="e.g. name@upi"
-              className="flex-1 px-3.5 py-2 rounded-xl border border-stone-300 text-xs sm:text-sm focus:ring-2 focus:ring-[#C25E3E]"
-            />
-            <button
-              onClick={handleSaveUpi}
-              className="px-4 py-2 rounded-xl bg-[#C25E3E] text-white text-xs font-bold hover:bg-[#a94e32]"
-            >
-              Save
-            </button>
+        {isEditingBank || !upiId ? (
+          <div className="space-y-2">
+            <div className="flex items-center gap-3 max-w-md">
+              <input
+                type="text"
+                value={upiId}
+                onChange={(e) => setUpiId(e.target.value)}
+                placeholder="e.g. yourname@upi or mobile@okhdfcbank"
+                className="flex-1 px-3.5 py-2 rounded-xl border border-stone-300 text-xs sm:text-sm focus:ring-2 focus:ring-[#C25E3E]"
+              />
+              <button
+                onClick={handleSaveUpi}
+                disabled={!upiId.trim()}
+                className="px-4 py-2 rounded-xl bg-[#C25E3E] text-white text-xs font-bold hover:bg-[#a94e32] disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Save
+              </button>
+            </div>
+            {!upiId && (
+              <p className="text-xs text-stone-500">
+                Link your personal bank UPI ID to receive direct, zero-commission customer settlements.
+              </p>
+            )}
+            {saveSuccess && (
+              <p className="text-xs text-emerald-600 font-semibold flex items-center gap-1">
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                UPI ID updated successfully!
+              </p>
+            )}
           </div>
         ) : (
           <div className="p-4 rounded-2xl bg-stone-50 border border-stone-200/80 flex flex-wrap items-center justify-between gap-4">
@@ -198,24 +302,41 @@ export const EarningsPage: React.FC<EarningsPageProps> = ({
 
       {/* Recent Payout Disbursements */}
       <div className="bg-white p-6 sm:p-8 rounded-3xl border border-stone-200/80 shadow-xs space-y-4">
-        <h3 className="text-base font-bold text-slate-900">Recent Disbursements</h3>
-        
-        <div className="divide-y divide-stone-100">
-          {payoutHistory.map((tx) => (
-            <div key={tx.id} className="py-3.5 flex items-center justify-between">
-              <div>
-                <p className="text-xs font-bold text-slate-900">{tx.desc}</p>
-                <p className="text-[11px] text-stone-400">{tx.date}</p>
-              </div>
-              <div className="text-right">
-                <span className="text-sm font-bold text-emerald-700 font-serif block">
-                  +₹{tx.amount.toLocaleString('en-IN')}
-                </span>
-                <span className="text-[10px] font-bold text-emerald-600">✓ {tx.status}</span>
-              </div>
-            </div>
-          ))}
+        <div className="flex items-center justify-between">
+          <h3 className="text-base font-bold text-slate-900">Recent Disbursements</h3>
+          {payoutHistory.length > 0 && (
+            <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
+              {payoutHistory.length} Completed
+            </span>
+          )}
         </div>
+        
+        {payoutHistory.length === 0 ? (
+          <div className="py-8 px-4 text-center border border-dashed border-stone-200 rounded-2xl space-y-2">
+            <Clock className="w-8 h-8 text-stone-300 mx-auto" />
+            <p className="text-sm font-bold text-slate-800">No disbursements yet</p>
+            <p className="text-xs text-stone-500 max-w-sm mx-auto">
+              Completed sales revenue and approved commission milestones will appear here as direct bank settlements.
+            </p>
+          </div>
+        ) : (
+          <div className="divide-y divide-stone-100">
+            {payoutHistory.map((tx) => (
+              <div key={tx.id} className="py-3.5 flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-bold text-slate-900">{tx.desc}</p>
+                  <p className="text-[11px] text-stone-400">{tx.date}</p>
+                </div>
+                <div className="text-right">
+                  <span className="text-sm font-bold text-emerald-700 font-serif block">
+                    +₹{tx.amount.toLocaleString('en-IN')}
+                  </span>
+                  <span className="text-[10px] font-bold text-emerald-600">✓ {tx.status}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
     </div>

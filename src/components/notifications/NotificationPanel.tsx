@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { AppNotification, PageTab } from '../../types';
 import { useNotifications } from '../../context/NotificationContext';
+import { useAuth } from '../../context/AuthContext';
 
 interface NotificationPanelProps {
   isOpen: boolean;
@@ -32,8 +33,14 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
   onSelectOrder,
   onSelectQuoteRequest,
 }) => {
+  const { user } = useAuth();
   const { notifications, unreadCount, markAsRead, markAllAsRead, formatTimeAgo } =
     useNotifications();
+
+  // Strict User Data Isolation: Only show activities where recipientUserId === user.uid
+  const userNotifications = notifications.filter(
+    (n) => Boolean(user?.uid && n.recipientUserId === user.uid)
+  );
 
   if (!isOpen) return null;
 
@@ -43,6 +50,12 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
   };
 
   const handleNotificationClick = async (notif: AppNotification) => {
+    // Strict ownership verification: activity must belong to authenticated user
+    if (!user?.uid || notif.recipientUserId !== user.uid) {
+      console.warn('Unauthorized activity interaction blocked');
+      return;
+    }
+
     // 1. Mark as read
     if (!notif.read) {
       await markAsRead(notif.notificationId);
@@ -203,7 +216,7 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
 
         {/* Notifications List Body */}
         <div className="max-h-[380px] overflow-y-auto divide-y divide-stone-100">
-          {notifications.length === 0 ? (
+          {userNotifications.length === 0 ? (
             /* Empty State */
             <div className="p-8 text-center space-y-2">
               <div className="w-12 h-12 rounded-full bg-stone-100 text-stone-400 flex items-center justify-center mx-auto">
@@ -213,7 +226,7 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
               <p className="text-xs text-stone-500">No new activity yet.</p>
             </div>
           ) : (
-            notifications.slice(0, 10).map((notif) => (
+            userNotifications.slice(0, 10).map((notif) => (
               <div
                 key={notif.notificationId}
                 id={`notification-item-${notif.notificationId}`}
